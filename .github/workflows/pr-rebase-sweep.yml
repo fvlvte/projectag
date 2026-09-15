@@ -1,0 +1,46 @@
+# Keeps every open, same-repo PR conflict-free with master automatically.
+# Runs on every push to master: rebases each open PR branch and pushes the
+# result straight back (force-with-lease) when it's clean, so qa-linux /
+# qa-windows-harness re-run on their own via `synchronize`. A branch with a
+# real conflict is left untouched and reported to Paperclip instead of
+# guessed at — see .github/scripts/rebase-open-prs.py for the full contract.
+name: pr-rebase-sweep
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: pr-rebase-sweep
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PAPERCLIP_API_URL: ${{ secrets.PAPERCLIP_API_URL }}
+      PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
+      PAPERCLIP_COMPANY_ID: ${{ secrets.PAPERCLIP_COMPANY_ID }}
+    steps:
+      - name: Checkout
+        # persist-credentials stays at its default (true), unlike every other
+        # workflow here: this job's whole job is pushing rebased branches, so
+        # it needs the checkout's stored GITHUB_TOKEN credential helper.
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity for replayed commits
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Rebase open PRs onto master
+        run: python3 .github/scripts/rebase-open-prs.py
