@@ -122,6 +122,7 @@ jobs:
           python3 scripts/test_repo_trackers.py
           python3 scripts/test_paperclip_insights.py
           python3 scripts/test_paperclip_redact.py
+          python3 scripts/test_upload_paperclip_qa_summary.py
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         continue-on-error: true
