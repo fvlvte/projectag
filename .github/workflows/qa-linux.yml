@@ -280,7 +280,6 @@ jobs:
     env:
       GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
       WGPU_BACKEND: vulkan
-      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
       LIBGL_ALWAYS_SOFTWARE: "1"
       PROJECTAG_QA_BACKGROUND: "1"
     steps:
@@ -302,6 +301,36 @@ jobs:
           # sidecar starts. libxkbcommon-dev does not install that runtime
           # (AGS-48 / nightly 34945876232).
           ldconfig -p | grep -F libxkbcommon-x11.so.0
+          # ubuntu-22.04 jammy shipped lvp_icd.x86_64.json. ubuntu-latest is
+          # noble; mesa-vulkan-drivers 25.2 installs lvp_icd.json instead.
+          # Hardcoding the jammy name made the loader report Failed to open
+          # JSON file / Found no drivers! (AGS-52 / run 34949330448).
+          ICD=""
+          for candidate in \
+            /usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
+            /usr/share/vulkan/icd.d/lvp_icd.json; do
+            if [ -f "$candidate" ]; then
+              ICD="$candidate"
+              break
+            fi
+          done
+          if [ -z "$ICD" ]; then
+            ICD="$(find /usr/share/vulkan /usr/lib -name 'lvp_icd*.json' \
+              ! -name '*i686*' ! -name '*i386*' 2>/dev/null | head -1 || true)"
+          fi
+          if [ -z "$ICD" ] || [ ! -f "$ICD" ]; then
+            echo "No lavapipe ICD JSON after mesa-vulkan-drivers install"
+            ls -la /usr/share/vulkan/icd.d/ || true
+            dpkg -L mesa-vulkan-drivers | grep -E 'icd|lvp' || true
+            exit 1
+          fi
+          test -f /usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+          echo "Using lavapipe ICD $ICD"
+          ls -la "$ICD" /usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+          # VK_DRIVER_FILES is the current loader name; VK_ICD_FILENAMES is
+          # the alias wgpu/Bevy still read. Both must name a file that exists.
+          echo "VK_ICD_FILENAMES=$ICD" >> "$GITHUB_ENV"
+          echo "VK_DRIVER_FILES=$ICD" >> "$GITHUB_ENV"
       - name: Unlock git-crypt
         run: |
           test -n "${GITCRYPT_KEY_B64}" || { echo "Add repository secret GITCRYPT_KEY_B64"; exit 1; }
@@ -315,7 +344,12 @@ jobs:
             tools/agx -> target
           prefix-key: qa-linux-client
       - name: Software Vulkan adapter present
-        run: xvfb-run -a vulkaninfo --summary | head -40 || true
+        run: |
+          test -n "${VK_ICD_FILENAMES:-}"
+          test -f "$VK_ICD_FILENAMES"
+          xvfb-run -a vulkaninfo --summary > "$RUNNER_TEMP/vulkaninfo-summary.txt"
+          head -40 "$RUNNER_TEMP/vulkaninfo-summary.txt"
+          grep -Ei 'llvmpipe|lavapipe' "$RUNNER_TEMP/vulkaninfo-summary.txt"
       - name: QA doctor
         run: cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa doctor --json
       - name: Client harness scenarios
