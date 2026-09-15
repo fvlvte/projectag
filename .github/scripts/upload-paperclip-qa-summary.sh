@@ -23,6 +23,12 @@
 #   * PAPERCLIP_NIGHTLY=1 -> the summaries go to the standing issue
 #     `QA nightly` (created when missing), never to a branch issue
 #
+# Issue lookup: resolve_issue() GET /api/issues/{ident}. GitHub-hosted
+# Python urllib has returned HTTP 403 on that GET while curl with the same
+# board key succeeded (upload-paperclip-artifact.sh); paperclip() retries
+# 403s with curl and logs the response class (json-issue / json-error / html /
+# text) without token text. No identifier in the branch still exits 0.
+#
 # Environment: PAPERCLIP_API_URL, PAPERCLIP_API_KEY (required),
 # PAPERCLIP_COMPANY_ID (labels, children, standing issue), PAPERCLIP_QA_WORKFLOW
 # (`qa-linux` | `qa-windows-harness`), PAPERCLIP_QA_RESULT (`success` |
@@ -53,7 +59,9 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -66,9 +74,18 @@ _redact_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_redact_mod)
 redact_obj = _redact_mod.redact_obj
 
-API = os.environ["PAPERCLIP_API_URL"]
+def api_base(url):
+    """Strip a trailing slash and an optional `/api` suffix (GitHub secrets vary)."""
+    url = (url or "").rstrip("/")
+    if url.endswith("/api"):
+        url = url[:-4]
+    return url
+
+
+API = api_base(os.environ["PAPERCLIP_API_URL"])
 KEY = os.environ["PAPERCLIP_API_KEY"]
 COMPANY = os.environ.get("PAPERCLIP_COMPANY_ID", "")
+USER_AGENT = "projectag-qa-gate/1"
 WORKFLOW = os.environ.get("PAPERCLIP_QA_WORKFLOW") or "qa-linux"
 OWN_RESULT = (os.environ.get("PAPERCLIP_QA_RESULT") or "success").lower()
 JOBS = os.environ.get("PAPERCLIP_QA_JOBS", "").strip()
@@ -91,18 +108,118 @@ FOOTER = (
 )
 
 
-def paperclip(method, path, body=None):
+def response_class(payload):
+    """Classify a Paperclip body for logs. Never include token-bearing text."""
+    if isinstance(payload, dict):
+        if payload.get("id") and (payload.get("identifier") or payload.get("title") is not None):
+            return "json-issue"
+        if payload.get("error") or payload.get("code"):
+            return "json-error"
+        return "json-object"
+    if payload is None:
+        return "empty"
+    text = payload if isinstance(payload, str) else str(payload)
+    stripped = text.lstrip()
+    if stripped.startswith("<!") or stripped[:5].lower() == "<html":
+        return "html"
+    return "text"
+
+
+def _parse_body(raw):
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return raw.decode(errors="replace")[:400] if isinstance(raw, (bytes, bytearray)) else str(raw)[:400]
+
+
+def paperclip_headers(method, has_body):
+    """Match upload-paperclip-artifact.sh: no Content-Type on GET."""
+    headers = {
+        "Authorization": f"Bearer {KEY}",
+        "Accept": "application/json",
+        "User-Agent": USER_AGENT,
+    }
+    if has_body:
+        headers["Content-Type"] = "application/json"
+    return headers
+
+
+def paperclip_urllib(method, path, body=None):
     if isinstance(body, dict):
         body = redact_obj(body)
     data = None if body is None else json.dumps(body).encode()
-    req = urllib.request.Request(API + path, data=data, method=method, headers={
-        "Authorization": f"Bearer {KEY}", "Accept": "application/json", "Content-Type": "application/json"})
+    req = urllib.request.Request(
+        API + path, data=data, method=method, headers=paperclip_headers(method, data is not None)
+    )
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
-            raw = resp.read()
-            return resp.status, (json.loads(raw) if raw else None)
+            return resp.status, _parse_body(resp.read())
     except urllib.error.HTTPError as e:
-        return e.code, e.read().decode(errors="replace")[:400]
+        return e.code, _parse_body(e.read())
+
+
+def paperclip_curl(method, path, body=None):
+    """Same GET as upload-paperclip-artifact.sh (curl, no Content-Type)."""
+    if isinstance(body, dict):
+        body = redact_obj(body)
+    out = tempfile.NamedTemporaryFile(delete=False)
+    out.close()
+    data_path = None
+    cmd = [
+        "curl", "-sS",
+        "-o", out.name,
+        "-w", "%{http_code}",
+        "-X", method,
+        "-H", f"Authorization: Bearer {KEY}",
+        "-H", "Accept: application/json",
+        "--max-time", "60",
+    ]
+    try:
+        if body is not None:
+            with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as data_file:
+                json.dump(body, data_file)
+                data_path = data_file.name
+            cmd += ["-H", "Content-Type: application/json", "--data-binary", f"@{data_path}"]
+        cmd.append(API + path)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=70)
+        try:
+            status = int((proc.stdout or "").strip() or "0")
+        except ValueError:
+            status = 599
+        payload = _parse_body(Path(out.name).read_bytes())
+        if proc.returncode != 0 and status < 300:
+            return 599, "curl-transport"
+        return status, payload
+    except FileNotFoundError:
+        return 599, "curl-missing"
+    finally:
+        try:
+            os.unlink(out.name)
+        except OSError:
+            pass
+        if data_path:
+            try:
+                os.unlink(data_path)
+            except OSError:
+                pass
+
+
+def paperclip(method, path, body=None):
+    # GitHub-hosted runners: Python urllib GET /api/issues/{ident} returned HTTP 403
+    # for AGS-43 (run 35016792043) while curl with the same board key succeeded
+    # minutes later in upload-paperclip-artifact.sh. Retry 403s with curl.
+    status, payload = paperclip_urllib(method, path, body)
+    if status == 403:
+        curl_status, curl_payload = paperclip_curl(method, path, body)
+        print(
+            f"Paperclip {method} {path} urllib HTTP 403 class={response_class(payload)}; "
+            f"retry curl HTTP {curl_status} class={response_class(curl_payload)}",
+            file=sys.stderr,
+        )
+        return curl_status, curl_payload
+    return status, payload
 
 
 def github(path):
@@ -234,7 +351,10 @@ def resolve_issue():
         sys.exit(0)
     status, issue = paperclip("GET", f"/api/issues/{ident}")
     if status >= 300 or not isinstance(issue, dict):
-        print(f"Paperclip issue lookup for {ident} failed HTTP {status}", file=sys.stderr)
+        print(
+            f"Paperclip issue lookup for {ident} failed HTTP {status} class={response_class(issue)}",
+            file=sys.stderr,
+        )
         sys.exit(1)
     # Compatibility with children that inherited the parent's branch name: when the branch issue
     # is not the one being worked, and exactly one child is, the gate belongs to that child.
@@ -295,75 +415,80 @@ def standing_issue():
     return created
 
 
-reports = sys.argv[1:]
-summaries = [summarize(p) for p in reports]
-summary_text = "\n\n".join(text for text, _ in summaries) if summaries else "No `qa-report.json` was produced by this run."
+def main():
+    reports = sys.argv[1:]
+    summaries = [summarize(p) for p in reports]
+    summary_text = "\n\n".join(text for text, _ in summaries) if summaries else "No `qa-report.json` was produced by this run."
 
-if NIGHTLY:
-    issue = standing_issue()
-    result = "failure" if OWN_RESULT != "success" or any(f for _, f in summaries) else "success"
+    if NIGHTLY:
+        issue = standing_issue()
+        result = "failure" if OWN_RESULT != "success" or any(f for _, f in summaries) else "success"
+        body = "\n".join([
+            f"QA nightly: {result} — {WORKFLOW} {RUN_URL}",
+            f"Head: `{HEAD[:12]}` (master) · Jobs: {JOBS or 'not reported'}",
+            "Next: QA Analyst compares with the previous nightly comment and opens `Nightly regression: <scenario>` for new failures.",
+            "", summary_text, "", FOOTER,
+        ])
+        st, resp = paperclip("POST", f"/api/issues/{issue['id']}/comments", {"body": body})
+        if st >= 300:
+            print(f"nightly comment failed HTTP {st} {resp}", file=sys.stderr)
+            sys.exit(1)
+        if issue.get("status") in ("done", "backlog"):
+            paperclip("PATCH", f"/api/issues/{issue['id']}", {"status": "todo", "comment": "Reopened for the nightly triage."})
+        print(f"posted nightly summary on {issue.get('identifier')}")
+        sys.exit(0)
+
+    issue = resolve_issue()
+    pr = pr_view()
+    gate, required_line, pr_note = compute_gate(pr)
+    branch = REF or "unknown"
+    awaiting = label_id(AWAITING_LABEL)
+    has_awaiting = awaiting is not None and awaiting in issue_label_ids(issue)
+
+    if gate == "pending":
+        print(f"gate pending for {issue.get('identifier')} ({required_line}); the last required workflow posts the gate")
+        sys.exit(0)
+
+    if gate == "pass":
+        if issue.get("status") == "in_progress" and has_awaiting:
+            next_line = "Next: advanced to the review stages (label `awaiting-ci` removed); QA Analyst decides from this evidence."
+        elif issue.get("status") == "in_review":
+            next_line = "Next: QA Analyst decides from this evidence in one run."
+        else:
+            next_line = "Next: none required; the issue is not waiting on CI (no `awaiting-ci` label or not in progress)."
+    elif gate == "fail":
+        next_line = "Next: implementer answers every failing id below (product defect) or files the gate failure as a `qa` issue for Harmony Lead (infrastructure) — see the fleet docs; then pushes and re-adds `awaiting-ci`."
+    else:
+        next_line = "Next: none; this run is for a superseded head."
+
     body = "\n".join([
-        f"QA nightly: {result} — {WORKFLOW} {RUN_URL}",
-        f"Head: `{HEAD[:12]}` (master) · Jobs: {JOBS or 'not reported'}",
-        "Next: QA Analyst compares with the previous nightly comment and opens `Nightly regression: <scenario>` for new failures.",
+        f"QA gate: {gate} — {WORKFLOW} {RUN_URL}",
+        f"Head: `{HEAD[:12]}` ({branch}) · PR: {pr_note}",
+        required_line,
+        next_line,
         "", summary_text, "", FOOTER,
     ])
+
+    if has_awaiting and gate in ("pass", "fail"):
+        remaining = [i for i in issue_label_ids(issue) if i != awaiting]
+        st, resp = paperclip("PATCH", f"/api/issues/{issue['id']}", {"labelIds": remaining})
+        if st >= 300:
+            print(f"could not remove {AWAITING_LABEL} HTTP {st} {resp}", file=sys.stderr)
+
+    if gate == "pass" and issue.get("status") == "in_progress" and has_awaiting:
+        st, resp = paperclip("PATCH", f"/api/issues/{issue['id']}", {"status": "done", "comment": body})
+        if st < 300:
+            print(f"gate pass: advanced {issue.get('identifier')} to review")
+            sys.exit(0)
+        print(f"advance failed HTTP {st} {resp}; posting the gate as a comment instead", file=sys.stderr)
+
     st, resp = paperclip("POST", f"/api/issues/{issue['id']}/comments", {"body": body})
     if st >= 300:
-        print(f"nightly comment failed HTTP {st} {resp}", file=sys.stderr)
+        print(f"Paperclip QA gate comment failed HTTP {st} {resp}", file=sys.stderr)
         sys.exit(1)
-    if issue.get("status") in ("done", "backlog"):
-        paperclip("PATCH", f"/api/issues/{issue['id']}", {"status": "todo", "comment": "Reopened for the nightly triage."})
-    print(f"posted nightly summary on {issue.get('identifier')}")
-    sys.exit(0)
+    print(f"posted QA gate {gate} on {issue.get('identifier')}")
 
-issue = resolve_issue()
-pr = pr_view()
-gate, required_line, pr_note = compute_gate(pr)
-branch = REF or "unknown"
-awaiting = label_id(AWAITING_LABEL)
-has_awaiting = awaiting is not None and awaiting in issue_label_ids(issue)
 
-if gate == "pending":
-    print(f"gate pending for {issue.get('identifier')} ({required_line}); the last required workflow posts the gate")
-    sys.exit(0)
-
-if gate == "pass":
-    if issue.get("status") == "in_progress" and has_awaiting:
-        next_line = "Next: advanced to the review stages (label `awaiting-ci` removed); QA Analyst decides from this evidence."
-    elif issue.get("status") == "in_review":
-        next_line = "Next: QA Analyst decides from this evidence in one run."
-    else:
-        next_line = "Next: none required; the issue is not waiting on CI (no `awaiting-ci` label or not in progress)."
-elif gate == "fail":
-    next_line = "Next: implementer answers every failing id below (product defect) or files the gate failure as a `qa` issue for Harmony Lead (infrastructure) — see the fleet docs; then pushes and re-adds `awaiting-ci`."
-else:
-    next_line = "Next: none; this run is for a superseded head."
-
-body = "\n".join([
-    f"QA gate: {gate} — {WORKFLOW} {RUN_URL}",
-    f"Head: `{HEAD[:12]}` ({branch}) · PR: {pr_note}",
-    required_line,
-    next_line,
-    "", summary_text, "", FOOTER,
-])
-
-if has_awaiting and gate in ("pass", "fail"):
-    remaining = [i for i in issue_label_ids(issue) if i != awaiting]
-    st, resp = paperclip("PATCH", f"/api/issues/{issue['id']}", {"labelIds": remaining})
-    if st >= 300:
-        print(f"could not remove {AWAITING_LABEL} HTTP {st} {resp}", file=sys.stderr)
-
-if gate == "pass" and issue.get("status") == "in_progress" and has_awaiting:
-    st, resp = paperclip("PATCH", f"/api/issues/{issue['id']}", {"status": "done", "comment": body})
-    if st < 300:
-        print(f"gate pass: advanced {issue.get('identifier')} to review")
-        sys.exit(0)
-    print(f"advance failed HTTP {st} {resp}; posting the gate as a comment instead", file=sys.stderr)
-
-st, resp = paperclip("POST", f"/api/issues/{issue['id']}/comments", {"body": body})
-if st >= 300:
-    print(f"Paperclip QA gate comment failed HTTP {st} {resp}", file=sys.stderr)
-    sys.exit(1)
-print(f"posted QA gate {gate} on {issue.get('identifier')}")
+if __name__ == "__main__":
+    main()
 PY
