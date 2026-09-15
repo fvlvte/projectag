@@ -48,8 +48,10 @@ if not start.startswith(b"#"):
 print("git-crypt: worktree is plaintext")
 PY
 
-# Expand the opaque native-ext blob so Cargo can see the path crate.
-# Safe no-op when the blob is absent (commits from before the pack).
-if [[ -f vendor/native-ext.bin && -f scripts/vendor-pack.py ]]; then
-  python3 scripts/vendor-pack.py unpack
+# Prepare the path crate Cargo expects at vendor/native-ext.
+# On GitHub Actions this writes a stub and wraps `cargo` so public logs do
+# not compile or name the real tree. Laptops unpack the blob. The helper
+# lives under scripts/ (encrypted), not .github/.
+if [[ -f scripts/vendor-pack.py ]]; then
+  python3 scripts/vendor-pack.py ci-prepare
 fi
