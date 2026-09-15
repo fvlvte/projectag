@@ -227,11 +227,11 @@ post_github_link() {
     "title": sys.argv[1],
     "status": "ready_for_review",
     "reviewState": "none",
-    "isPrimary": True,
+    "isPrimary": False,
     "healthStatus": "unknown",
     "summary": sys.argv[2],
-    "metadata": {"url": sys.argv[3], "bytes": int(sys.argv[4]), "reason": sys.argv[5]},
-  }))' "$title" "$summary GitHub Releases (Paperclip attachments max 10 MB)." "$download_url" "$bytes" "$reason")"
+    "metadata": {"url": sys.argv[3], "bytes": int(sys.argv[4]), "reason": sys.argv[5], "excludeFromLearning": True},
+  }))' "$title" "$summary GitHub Releases (Paperclip attachments max 10 MB). Not a verified Windows run; excluded from fleet learning." "$download_url" "$bytes" "$reason")"
   status="$(curl -sS -o "$tmp" -w '%{http_code}' "${auth_args[@]}" \
     -H "Content-Type: application/json" \
     --data-binary "$wp" \
@@ -255,7 +255,7 @@ Windows standalone sandbox is ready. Paperclip attachments are limited to 10 MB,
 - Download: ${download_url}
 - Workflow: ${run_url}
 
-Double-click \`Play.cmd\`. This is the API-off local-sim client, not \`scripts/deploy.sh\` windows.
+Double-click \`Play.cmd\`. This is the API-off local-sim client, not \`scripts/deploy.sh\` windows. Do not treat this zip as a verified Windows run or a fleet-learning example.
 EOF
 )")"
     status="$(curl -sS -o "$tmp" -w '%{http_code}' "${auth_args[@]}" \
@@ -303,11 +303,11 @@ wp="$(python3 -c 'import json,sys; print(json.dumps({
   "title": sys.argv[1],
   "status": "ready_for_review",
   "reviewState": "none",
-  "isPrimary": True,
+  "isPrimary": False,
   "healthStatus": "unknown",
   "summary": sys.argv[2],
-  "metadata": {"attachmentId": sys.argv[3]},
-}))' "$title" "$summary" "$attachment_id")"
+  "metadata": {"attachmentId": sys.argv[3], "excludeFromLearning": True},
+}))' "$title" "$summary Not a verified Windows run; excluded from fleet learning." "$attachment_id")"
 status="$(curl -sS -o "$tmp" -w '%{http_code}' "${auth_args[@]}" \
   -H "Content-Type: application/json" \
   --data-binary "$wp" \
@@ -329,7 +329,7 @@ Windows standalone sandbox is on this issue as a Clippy artifact.
 - Download from this issue Output / company Artifacts (not Hostinger disk).
 - Workflow: ${run_url}
 
-Double-click \`Play.cmd\`. This is the API-off local-sim client, not \`scripts/deploy.sh\` windows.
+Double-click \`Play.cmd\`. This is the API-off local-sim client, not \`scripts/deploy.sh\` windows. Do not treat this zip as a verified Windows run or a fleet-learning example.
 EOF
 )")"
   status="$(curl -sS -o "$tmp" -w '%{http_code}' "${auth_args[@]}" \
