@@ -34,6 +34,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -59,22 +60,74 @@ def gh_json(*args: str):
     return json.loads(out.stdout)
 
 
-def paperclip(method: str, path: str, body: dict | None = None):
-    if not KEY:
-        return None, None
+def _parse_body(raw):
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return raw.decode(errors="replace")[:400] if isinstance(raw, (bytes, bytearray)) else str(raw)[:400]
+
+
+def _paperclip_urllib(method: str, path: str, body: dict | None):
     data = None if body is None else json.dumps(body).encode()
-    req = urllib.request.Request(
-        API + path,
-        data=data,
-        method=method,
-        headers={"Authorization": f"Bearer {KEY}", "Accept": "application/json", "Content-Type": "application/json"},
-    )
+    headers = {"Authorization": f"Bearer {KEY}", "Accept": "application/json"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(API + path, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
-            raw = resp.read()
-            return resp.status, (json.loads(raw) if raw else None)
+            return resp.status, _parse_body(resp.read())
     except urllib.error.HTTPError as e:
-        return e.code, e.read().decode(errors="replace")[:400]
+        return e.code, _parse_body(e.read())
+
+
+def _paperclip_curl(method: str, path: str, body: dict | None):
+    """Same request shape as upload-paperclip-qa-summary.sh's curl fallback."""
+    out = tempfile.NamedTemporaryFile(delete=False)
+    out.close()
+    data_path = None
+    cmd = [
+        "curl", "-sS", "-o", out.name, "-w", "%{http_code}", "-X", method,
+        "-H", f"Authorization: Bearer {KEY}", "-H", "Accept: application/json", "--max-time", "60",
+    ]
+    try:
+        if body is not None:
+            with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as data_file:
+                json.dump(body, data_file)
+                data_path = data_file.name
+            cmd += ["-H", "Content-Type: application/json", "--data-binary", f"@{data_path}"]
+        cmd.append(API + path)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=70)
+        try:
+            status = int((proc.stdout or "").strip() or "0")
+        except ValueError:
+            status = 599
+        payload = _parse_body(Path(out.name).read_bytes())
+        return (599, "curl-transport") if proc.returncode != 0 and status < 300 else (status, payload)
+    except FileNotFoundError:
+        return 599, "curl-missing"
+    finally:
+        for p in (out.name, data_path):
+            if p:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+
+
+def paperclip(method: str, path: str, body: dict | None = None):
+    """GitHub-hosted runners: Python urllib has returned HTTP 403 on a GET that
+    curl with the same board key succeeds on seconds later (same finding as
+    upload-paperclip-qa-summary.sh, PR #9, 2026-09-15). Retry 403s with curl."""
+    if not KEY:
+        return None, None
+    status, payload = _paperclip_urllib(method, path, body)
+    if status == 403:
+        curl_status, curl_payload = _paperclip_curl(method, path, body)
+        print(f"Paperclip {method} {path} urllib HTTP 403; retry curl HTTP {curl_status}", file=sys.stderr)
+        return curl_status, curl_payload
+    return status, payload
 
 
 def resolve_issue(branch: str):
