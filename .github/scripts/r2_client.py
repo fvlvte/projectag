@@ -375,7 +375,15 @@ class R2Client:
                 payload_hash=payload_hash,
             )
         if status not in (200, 201):
-            die(f"PutObject {key} HTTP {status}: {body[:500]!r}")
+            hint = ""
+            if status == 403:
+                hint = (
+                    f" — token cannot write s3://{self.bucket} on {self.host}. "
+                    "Mint a Cloudflare R2 S3 User API token with Object Read & Write "
+                    "on this bucket and set R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY "
+                    "on fvlvte/projectag (not an account API token, not inbox/CDN-only)."
+                )
+            die(f"PutObject {key} HTTP {status}: {body[:500]!r}{hint}")
         log(f"uploaded s3://{self.bucket}/{key} ({size} bytes)")
 
     def copy_object(

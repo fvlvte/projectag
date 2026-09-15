@@ -82,7 +82,17 @@ fi
 if [[ -z "$issue_id" ]]; then
   issue_id="${PAPERCLIP_FALLBACK_ISSUE_ID:-}"
 fi
-[[ -n "$issue_id" ]] || die "no Paperclip issue for ref '${git_ref}' (set PAPERCLIP_ISSUE_ID or PAPERCLIP_FALLBACK_ISSUE_ID)"
+if [[ -z "$issue_id" ]]; then
+  # master / non-issue branches have nothing to comment on. QA summary
+  # already exits 0 here; do not fail the zip job after a successful pack.
+  log "no Paperclip issue for ref '${git_ref}'; nothing posted"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    printf 'mode=skipped\n'
+    printf 'issue=\n'
+    printf 'ref=%s\n' "$git_ref"
+  fi
+  exit 0
+fi
 
 sha="${GITHUB_SHA:-}"
 run_url="${GITHUB_SERVER_URL:-}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-}"
