@@ -64,6 +64,7 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - name: Cache cargo and xwin
+        continue-on-error: true
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
