@@ -1,0 +1,163 @@
+# Windows API-off local-sim sandbox zip for QA / Paperclip.
+# This is not scripts/deploy.sh windows (no patcher, no dist profile, no production API).
+# `.github/**` is git-crypt-exempt so GitHub can read this file.
+name: windows-standalone
+
+on:
+  push:
+    branches:
+      - "**"
+  workflow_dispatch:
+
+concurrency:
+  group: windows-standalone-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  windows-standalone:
+    if: ${{ !contains(github.event.head_commit.message || '', '[skip ci]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Free disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - name: Install unlock and pack tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-crypt zip pkg-config libssl-dev cmake clang lld llvm
+
+      - name: MSVC-named LLVM shims for cargo-xwin
+        run: |
+          bash .github/scripts/install-xwin-msvc-shims.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Require git-crypt key
+        run: |
+          if [ -z "${GITCRYPT_KEY_B64}" ]; then
+            echo "Add repository secret GITCRYPT_KEY_B64 (git-crypt export-key piped through base64)."
+            exit 1
+          fi
+
+      - name: Unlock git-crypt
+        run: bash .github/scripts/git-crypt-unlock.sh
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo and xwin
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+          cache-targets: true
+          prefix-key: windows-standalone
+
+      - name: Cache xwin SDK and cargo-xwin
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.xwin
+            ~/.cargo/bin/cargo-xwin
+          key: xwin-msvc-${{ runner.os }}
+
+      - name: Install cargo-xwin
+        run: |
+          if ! command -v cargo-xwin >/dev/null; then
+            cargo install cargo-xwin --locked
+          fi
+
+      - name: Pack Windows standalone sandbox
+        id: pack
+        run: bash scripts/pack-windows-standalone.sh
+
+      - name: Name per-commit zip
+        id: zip
+        run: |
+          SHORT="${GITHUB_SHA:0:12}"
+          cp dist/engine-windows-standalone.zip "dist/engine-windows-standalone-${SHORT}.zip"
+          echo "short=${SHORT}" >> "$GITHUB_OUTPUT"
+          echo "zip=dist/engine-windows-standalone-${SHORT}.zip" >> "$GITHUB_OUTPUT"
+          echo "tag=standalone-windows-${SHORT}" >> "$GITHUB_OUTPUT"
+          ls -lh dist/engine-windows-standalone.zip "dist/engine-windows-standalone-${SHORT}.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-windows-standalone
+          path: dist/engine-windows-standalone-*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      # R2 first: GitHub Releases POST /releases can 500 and used to block CF.
+      - name: Publish Cloudflare R2 download
+        id: public
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || 'd9513a4189039ef82fa87e6a03465344' }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET || 'engine-windows-standalone' }}
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL || 'https://builds.projectag.online' }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: bash .github/scripts/publish-r2-windows-zip.sh "${{ steps.zip.outputs.zip }}" "${{ steps.zip.outputs.tag }}"
+
+      - name: Publish GitHub prerelease backup
+        id: github_release
+        if: ${{ !cancelled() && steps.pack.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          STANDALONE_TAG: ${{ steps.zip.outputs.tag }}
+          STANDALONE_SHORT: ${{ steps.zip.outputs.short }}
+          STANDALONE_ZIP: ${{ steps.zip.outputs.zip }}
+        run: bash .github/scripts/publish-github-prerelease.sh
+
+      - name: Upload Clippy artifact
+        id: clippy
+        if: ${{ !cancelled() && steps.pack.outcome == 'success' }}
+        env:
+          PAPERCLIP_API_URL: ${{ secrets.PAPERCLIP_API_URL }}
+          PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
+          PAPERCLIP_COMPANY_ID: ${{ secrets.PAPERCLIP_COMPANY_ID }}
+          PAPERCLIP_FALLBACK_ISSUE_ID: ${{ secrets.PAPERCLIP_WINDOWS_ISSUE_ID }}
+          PAPERCLIP_ARTIFACT_TITLE: Windows standalone ${{ steps.zip.outputs.short }}
+          PAPERCLIP_DOWNLOAD_URL: ${{ steps.public.outputs.url || format('{0}/{1}/releases/download/{2}/engine-windows-standalone-{3}.zip', github.server_url, github.repository, steps.zip.outputs.tag, steps.zip.outputs.short) }}
+        run: bash .github/scripts/upload-paperclip-artifact.sh "${{ steps.zip.outputs.zip }}"
+
+      - name: Notify Clippy of build failure
+        if: failure() && steps.pack.outcome == 'failure'
+        continue-on-error: true
+        env:
+          PAPERCLIP_API_URL: ${{ secrets.PAPERCLIP_API_URL }}
+          PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
+          PAPERCLIP_COMPANY_ID: ${{ secrets.PAPERCLIP_COMPANY_ID }}
+          PAPERCLIP_FALLBACK_ISSUE_ID: ${{ secrets.PAPERCLIP_WINDOWS_ISSUE_ID }}
+        run: bash .github/scripts/upload-paperclip-artifact.sh --notify-failure
+
+      - name: Job summary
+        if: ${{ !cancelled() && steps.pack.outcome == 'success' }}
+        run: |
+          {
+            echo "## Windows standalone sandbox"
+            echo
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- R2: ${{ steps.public.outputs.url }}"
+            echo "- Clippy: download URL on the issue (Paperclip attachments max 10 MB)"
+            echo "- GitHub backup: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${{ steps.zip.outputs.tag }}"
+            echo "- Rolling backup: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/standalone-windows"
+          } >> "$GITHUB_STEP_SUMMARY"

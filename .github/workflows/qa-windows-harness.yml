@@ -1,0 +1,210 @@
+# Private Windows client-harness evidence. This workflow never publishes a
+# qa-harness executable or QA pack to R2 / GitHub Releases. It runs when the
+# `qa-windows` label is added and on every later push to a labelled PR, so the
+# Paperclip QA gate (job report-paperclip) always has a run for the PR head.
+name: qa-windows-harness
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [labeled, synchronize]
+
+concurrency:
+  group: qa-windows-harness-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # report-paperclip reads the PR labels/head and the qa-linux run for the gate.
+  pull-requests: read
+  actions: read
+
+jobs:
+  build-qa-pack:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.label.name == 'qa-windows' || (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'qa-windows')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Free disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - name: Install unlock and pack tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-crypt zip pkg-config libssl-dev cmake clang lld llvm rsync
+
+      - name: MSVC-named LLVM shims for cargo-xwin
+        run: |
+          bash .github/scripts/install-xwin-msvc-shims.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Require git-crypt key
+        run: |
+          if [ -z "${GITCRYPT_KEY_B64}" ]; then
+            echo "Add repository secret GITCRYPT_KEY_B64 (git-crypt export-key piped through base64)."
+            exit 1
+          fi
+
+      - name: Unlock git-crypt
+        run: bash .github/scripts/git-crypt-unlock.sh
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo and xwin
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          cache-targets: true
+          prefix-key: qa-windows-harness
+
+      - name: Cache xwin SDK and cargo-xwin
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.xwin
+            ~/.cargo/bin/cargo-xwin
+          key: xwin-msvc-${{ runner.os }}
+
+      - name: Install cargo-xwin
+        run: |
+          if ! command -v cargo-xwin >/dev/null; then
+            cargo install cargo-xwin --locked
+          fi
+
+      - name: Build private Windows QA pack
+        run: |
+          cargo run --release --manifest-path tools/agx/Cargo.toml -- \
+            qa pack "$RUNNER_TEMP/projectag-qa-windows" \
+            --target x86_64-pc-windows-msvc
+
+      - name: Zip private QA pack
+        run: |
+          (
+            cd "$RUNNER_TEMP"
+            zip -r projectag-qa-windows.zip projectag-qa-windows
+          )
+
+      - name: Upload private QA pack
+        uses: actions/upload-artifact@v4
+        with:
+          name: projectag-qa-windows-pack
+          path: ${{ runner.temp }}/projectag-qa-windows.zip
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  run-qa:
+    needs: build-qa-pack
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Download private QA pack
+        uses: actions/download-artifact@v4
+        with:
+          name: projectag-qa-windows-pack
+          path: ${{ runner.temp }}/qa-download
+
+      - name: Expand private QA pack
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $zip = Join-Path $env:RUNNER_TEMP "qa-download\projectag-qa-windows.zip"
+          $expanded = Join-Path $env:RUNNER_TEMP "qa-expanded"
+          Expand-Archive -LiteralPath $zip -DestinationPath $expanded -Force
+          if (!(Test-Path -LiteralPath (Join-Path $expanded "projectag-qa-windows\pack.json"))) {
+            throw "invalid QA pack"
+          }
+
+      - name: Install DirectX Shader Compiler
+        shell: pwsh
+        run: |
+          $pack = Join-Path $env:RUNNER_TEMP "qa-expanded\projectag-qa-windows"
+          Invoke-WebRequest -Uri https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.8.2505/dxc_2025_05_24.zip -OutFile dxc.zip
+          Expand-Archive dxc.zip -DestinationPath dxc
+          Copy-Item dxc/bin/x64/dxc.exe $pack
+          Copy-Item dxc/bin/x64/dxcompiler.dll $pack
+          Copy-Item dxc/bin/x64/dxil.dll $pack
+
+      - name: Run Windows client harness
+        id: qa
+        shell: pwsh
+        env:
+          WGPU_BACKEND: dx12
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pack = Join-Path $env:RUNNER_TEMP "qa-expanded\projectag-qa-windows"
+          $results = Join-Path $env:RUNNER_TEMP "qa-windows-results"
+          New-Item -ItemType Directory -Force -Path $results | Out-Null
+          Add-Type -AssemblyName System.Windows.Forms
+          $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
+          [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point([int]($screen.Width / 2), [int]($screen.Height / 2))
+          Set-Location $pack
+          & (Join-Path $pack "agx.exe") qa run --pack . --output $results --driver harness --ready-timeout 240 --json `
+            harness.selftest.click-roundtrip windows.bag.open-close chat.input.focus-type `
+            | Tee-Object -FilePath (Join-Path $results "qa-run.json")
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload QA evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: projectag-qa-windows-evidence
+          path: |
+            ${{ runner.temp }}/qa-windows-results/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  report-paperclip:
+    needs: [build-qa-pack, run-qa]
+    # Runs even when the pack build failed (skipped run-qa): the gate comment
+    # must name a failed build, not stay silent.
+    if: ${{ always() && needs.build-qa-pack.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PAPERCLIP_API_URL: ${{ secrets.PAPERCLIP_API_URL }}
+      PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
+      PAPERCLIP_COMPANY_ID: ${{ secrets.PAPERCLIP_COMPANY_ID }}
+      PAPERCLIP_FALLBACK_ISSUE_ID: ${{ secrets.PAPERCLIP_WINDOWS_ISSUE_ID }}
+      PAPERCLIP_QA_WORKFLOW: qa-windows-harness
+      PAPERCLIP_QA_ARTIFACT: projectag-qa-windows-evidence
+      PAPERCLIP_QA_RESULT: ${{ needs.run-qa.result == 'success' && 'success' || 'failure' }}
+      PAPERCLIP_QA_JOBS: build-qa-pack=${{ needs.build-qa-pack.result }} run-qa=${{ needs.run-qa.result }}
+      PAPERCLIP_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      PAPERCLIP_PR_NUMBER: ${{ github.event.pull_request.number }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout report helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Download QA evidence
+        # Missing when build-qa-pack or run-qa failed before uploading.
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: projectag-qa-windows-evidence
+          path: qa-evidence
+
+      - name: Post the QA gate and evidence summary
+        if: ${{ env.PAPERCLIP_API_KEY != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t reports < <(find qa-evidence -name qa-report.json 2>/dev/null | sort)
+          bash .github/scripts/upload-paperclip-qa-summary.sh "${reports[@]}"

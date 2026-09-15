@@ -1,0 +1,363 @@
+# Linux QA gate for pull requests: static checks, core and backend tests, and a
+# software-adapter client harness. Job `report` posts one `QA gate` comment per
+# run to the Paperclip issue named by the branch and, when every required run
+# is green and the issue carries `awaiting-ci`, advances it to its review
+# stages (.github/scripts/upload-paperclip-qa-summary.sh). No agent is woken
+# directly. Nothing here publishes a binary; evidence stays in private Actions
+# artifacts. `.github/**` is git-crypt-exempt so GitHub can read this file.
+name: qa-linux
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+  schedule:
+    # Nightly full run on master: every job regardless of changed paths, so
+    # drift that no PR touched is caught and reported to QA Analyst.
+    - cron: "0 3 * * *"
+
+concurrency:
+  group: qa-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # dorny/paths-filter lists the PR's changed files through the API; the report
+  # job reads the PR labels and head SHA for the gate.
+  pull-requests: read
+  # The report job reads the other required workflow's run for the same head.
+  actions: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "3"
+
+jobs:
+  changes:
+    # Heavy jobs run only when their inputs changed; `static` always runs.
+    name: changed paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      backend: ${{ steps.filter.outputs.backend }}
+      client: ${{ steps.filter.outputs.client }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: dorny/paths-filter@v3
+        if: ${{ github.event_name == 'pull_request' }}
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'src/**'
+              - 'backend/**'
+              - 'tools/**'
+              - 'vendor/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'build.rs'
+              - '.github/workflows/qa-linux.yml'
+            backend:
+              - 'backend/**'
+              - 'Cargo.lock'
+              - '.github/workflows/qa-linux.yml'
+            client:
+              - 'src/**'
+              - 'assets/**'
+              - 'qa/**'
+              - 'tools/agx/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'build.rs'
+              - '.github/workflows/qa-linux.yml'
+
+  static:
+    name: static (docs, node, catalogue, content)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-crypt pkg-config libssl-dev
+      - name: Unlock git-crypt
+        run: |
+          test -n "${GITCRYPT_KEY_B64}" || { echo "Add repository secret GITCRYPT_KEY_B64"; exit 1; }
+          bash .github/scripts/git-crypt-unlock.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Documentation check
+        run: python3 scripts/check-docs.py
+      - name: Repository bloat check
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          FETCH_TOKEN: ${{ github.token }}
+        run: |
+          # checkout runs with persist-credentials: false, so the base commit
+          # is fetched with the job token explicitly; only the tree diff is needed.
+          git fetch --depth=1 "https://x-access-token:${FETCH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BASE_SHA"
+          python3 scripts/check-bloat.py --base "$BASE_SHA" --no-merge-base
+      - name: Node source contracts
+        run: |
+          set -o pipefail
+          for f in tests/*.test.mjs; do echo "== $f"; node --test "$f"; done
+      - name: Python script tests
+        run: |
+          python3 scripts/test_check_docs.py
+          python3 scripts/test_count_loc.py
+          python3 scripts/test_check_bloat.py
+          python3 scripts/test_repo_trackers.py
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            tools/agx -> target
+            backend -> target
+          prefix-key: qa-linux-static
+      - name: QA catalogue validation
+        run: cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa validate
+      - name: Content check
+        run: cargo run --quiet --manifest-path backend/Cargo.toml -p projectag-core --bin content-check
+
+  core:
+    name: core (client check, schedules, authority)
+    needs: changes
+    if: ${{ needs.changes.outputs.rust == 'true' || github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Free disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-crypt pkg-config libssl-dev cmake clang lld llvm nasm \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libx11-dev libxi-dev \
+            libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev libvulkan-dev
+      - name: Unlock git-crypt
+        run: |
+          test -n "${GITCRYPT_KEY_B64}" || { echo "Add repository secret GITCRYPT_KEY_B64"; exit 1; }
+          bash .github/scripts/git-crypt-unlock.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            backend -> target
+          prefix-key: qa-linux-core
+      - name: cargo check --features game
+        run: cargo check --features game
+      - name: cargo check --features game,actors
+        run: cargo check --features game,actors
+      - name: Schedule tests
+        run: |
+          cargo test --features game --lib schedule_tests
+          cargo test --features game,projectag-editor,actors --lib schedule_tests
+      - name: Shared-core authority tests
+        run: cargo test --manifest-path backend/Cargo.toml -p projectag-core --features authority
+
+  backend:
+    name: backend (isolated PostgreSQL harnesses)
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' || github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
+      # Debug service binaries on a shared runner take longer than the 12 s
+      # developer default to open their ports (seen 2026-09-14: the environment
+      # harness converged locally and hit "connection refused" here).
+      PROJECTAG_QA_CONVERGE_SEC: "90"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Free disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: Install build dependencies and PostgreSQL
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-crypt pkg-config libssl-dev cmake clang lld llvm postgresql postgresql-contrib
+          sudo systemctl stop postgresql || true
+          echo "/usr/lib/postgresql/$(ls /usr/lib/postgresql | sort -V | tail -1)/bin" >> "$GITHUB_PATH"
+      - name: Unlock git-crypt
+        run: |
+          test -n "${GITCRYPT_KEY_B64}" || { echo "Add repository secret GITCRYPT_KEY_B64"; exit 1; }
+          bash .github/scripts/git-crypt-unlock.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            tools/agx -> target
+            backend -> target
+          prefix-key: qa-linux-backend
+      - name: Harness tools present
+        run: command -v initdb pg_ctl createdb psql
+      - name: Exchange harness (bank, mail, trade receipts)
+        run: cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa backend exchange --output "$RUNNER_TEMP/qa-backend/exchange"
+      - name: Environment harness (service, shards, live socket)
+        run: cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa backend environment --output "$RUNNER_TEMP/qa-backend/environment"
+      - name: Accounts and ranking scenarios (web accounts, rankings, playtime)
+        # Sequential on purpose: the ranking and exchange scripts both bind
+        # loopback port 55441. items.delivery.audit (all ignored service
+        # suites) stays a local run until its duration is measured.
+        run: |
+          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run \
+            identity.web-accounts economy.ranking.playtime \
+            || echo "::warning::backend scenario failures; see the report below"
+          # Wrapped cargo/test output shares stdout with the runner, so the
+          # report file named by output/qa/latest.txt is the machine-readable
+          # result, not stdout.
+          REPORT_DIR="$(cat output/qa/latest.txt)"
+          mkdir -p "$RUNNER_TEMP/qa-backend/scenarios"
+          cp "$REPORT_DIR"/qa-report.json "$REPORT_DIR"/qa-report.md "$RUNNER_TEMP/qa-backend/scenarios/" 2>/dev/null || true
+          python3 - "$REPORT_DIR/qa-report.json" <<'PY'
+          import json, sys
+          report = json.load(open(sys.argv[1]))
+          failed = [s["id"] for s in report.get("scenarios", []) if s.get("result") == "fail"]
+          for s in report.get("scenarios", []):
+              print(f"{s['id']}: {s['result']} ({s.get('duration_ms', 0)} ms) {s.get('detail', '')[:120]}")
+          for n in report.get("not_run", []):
+              print(f"{n['id']}: not run: {n.get('reason', '')[:120]}")
+          sys.exit(1 if failed else 0)
+          PY
+      - name: Upload backend evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: projectag-qa-backend-evidence
+          path: ${{ runner.temp }}/qa-backend/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  client:
+    # Software-adapter client harness (xvfb + Mesa lavapipe). Experimental until
+    # a run proves the Bevy/wgpu adapter works on ubuntu-latest; see
+    # docs/proposals/paperclip-agent-fleet.md section 7.
+    name: client (software adapter harness + fixtures)
+    needs: changes
+    if: ${{ needs.changes.outputs.client == 'true' || github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    continue-on-error: true
+    env:
+      GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
+      WGPU_BACKEND: vulkan
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      PROJECTAG_QA_BACKGROUND: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Free disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: Install build dependencies, xvfb and Mesa
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-crypt pkg-config libssl-dev cmake clang lld llvm nasm \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libx11-dev libxi-dev \
+            libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev libvulkan-dev \
+            xvfb mesa-vulkan-drivers libvulkan1 libgl1-mesa-dri vulkan-tools
+      - name: Unlock git-crypt
+        run: |
+          test -n "${GITCRYPT_KEY_B64}" || { echo "Add repository secret GITCRYPT_KEY_B64"; exit 1; }
+          bash .github/scripts/git-crypt-unlock.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            tools/agx -> target
+          prefix-key: qa-linux-client
+      - name: Software Vulkan adapter present
+        run: xvfb-run -a vulkaninfo --summary | head -40 || true
+      - name: QA doctor
+        run: cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa doctor --json
+      - name: Client harness scenarios
+        run: |
+          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --json \
+            --output "$RUNNER_TEMP/qa-client" \
+            harness.selftest.click-roundtrip windows.bag.open-close chat.input.focus-type \
+            | tee "$RUNNER_TEMP/qa-client-run.json"
+      - name: Fixture PNG suites
+        if: ${{ always() }}
+        run: xvfb-run -a cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa fixtures --output "$RUNNER_TEMP/qa-fixtures"
+      - name: Upload client evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: projectag-qa-linux-evidence
+          path: |
+            ${{ runner.temp }}/qa-client/**
+            ${{ runner.temp }}/qa-client-run.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload fixture renders
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: projectag-qa-fixtures
+          path: ${{ runner.temp }}/qa-fixtures/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  report:
+    name: report to Paperclip
+    needs: [static, core, backend, client]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PAPERCLIP_API_URL: ${{ secrets.PAPERCLIP_API_URL }}
+      PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
+      PAPERCLIP_COMPANY_ID: ${{ secrets.PAPERCLIP_COMPANY_ID }}
+      PAPERCLIP_QA_WORKFLOW: qa-linux
+      # Required jobs: static, core, backend. `client` is experimental
+      # (continue-on-error) and is reported but does not fail the gate.
+      PAPERCLIP_QA_RESULT: ${{ (contains(fromJSON('["success","skipped"]'), needs.static.result) && contains(fromJSON('["success","skipped"]'), needs.core.result) && contains(fromJSON('["success","skipped"]'), needs.backend.result)) && 'success' || 'failure' }}
+      PAPERCLIP_QA_JOBS: static=${{ needs.static.result }} core=${{ needs.core.result }} backend=${{ needs.backend.result }} client=${{ needs.client.result }}
+      PAPERCLIP_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      PAPERCLIP_PR_NUMBER: ${{ github.event.pull_request.number }}
+      # Nightly runs have no issue branch; the summaries go to the standing
+      # issue `QA nightly` instead.
+      PAPERCLIP_NIGHTLY: ${{ github.event_name == 'schedule' && '1' || '' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Download evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: projectag-qa-*-evidence
+          path: qa-evidence
+      - name: Post the QA gate and evidence summaries
+        if: ${{ env.PAPERCLIP_API_KEY != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t reports < <(find qa-evidence -name qa-report.json 2>/dev/null | sort)
+          bash .github/scripts/upload-paperclip-qa-summary.sh "${reports[@]}"
