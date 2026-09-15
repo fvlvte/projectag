@@ -16,6 +16,7 @@
 # PAPERCLIP_DOWNLOAD_URL, PAPERCLIP_MAX_ATTACHMENT_BYTES, PAPERCLIP_RUN_ID,
 # GITHUB_REF_NAME / GITHUB_HEAD_REF / GITHUB_SHA.
 set -euo pipefail
+REDACT_PY="$(cd "$(dirname "$0")" && pwd)/paperclip-redact.py"
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 log() { printf '%s\n' "$*"; }
@@ -141,8 +142,7 @@ if [[ "$NOTIFY_FAILURE" -eq 1 ]]; then
   trap 'rm -f "$tmp"' EXIT
   issue_uuid="$(resolve_issue_uuid "$tmp")"
   [[ -n "$issue_uuid" ]] || die "issue lookup returned no id"
-  comment="$(python3 -c 'import json,sys
-print(json.dumps({"body": sys.argv[1]}))' "$(cat <<EOF
+  comment="$(python3 "$REDACT_PY" --comment <<EOF
 Windows standalone GitHub Actions **pack** failed. No zip was published.
 
 - Commit: \`${sha}\`
@@ -150,7 +150,7 @@ Windows standalone GitHub Actions **pack** failed. No zip was published.
 
 Open that log for the compiler error. This is the API-off \`windows-standalone\` job (cargo-xwin on ubuntu-latest), not \`scripts/deploy.sh\` windows. A Clippy attachment-limit error is not this message.
 EOF
-)")"
+)"
   status="$(curl -sS -o "$tmp" -w '%{http_code}' "${auth_args[@]}" \
     -H "Content-Type: application/json" \
     --data-binary "$comment" \
@@ -231,7 +231,7 @@ post_github_link() {
     "healthStatus": "unknown",
     "summary": sys.argv[2],
     "metadata": {"url": sys.argv[3], "bytes": int(sys.argv[4]), "reason": sys.argv[5], "excludeFromLearning": True},
-  }))' "$title" "$summary GitHub Releases (Paperclip attachments max 10 MB). Not a verified Windows run; excluded from fleet learning." "$download_url" "$bytes" "$reason")"
+  }))' "$title" "$summary GitHub Releases (Paperclip attachments max 10 MB). Not a verified Windows run; excluded from fleet learning." "$download_url" "$bytes" "$reason" | python3 "$REDACT_PY" --json)"
   status="$(curl -sS -o "$tmp" -w '%{http_code}' "${auth_args[@]}" \
     -H "Content-Type: application/json" \
     --data-binary "$wp" \
@@ -246,8 +246,7 @@ post_github_link() {
   fi
   if [[ "$NO_COMMENT" -eq 0 ]]; then
     local comment
-    comment="$(python3 -c 'import json,sys
-print(json.dumps({"body": sys.argv[1]}))' "$(cat <<EOF
+    comment="$(python3 "$REDACT_PY" --comment <<EOF
 Windows standalone sandbox is ready. Paperclip attachments are limited to 10 MB, so the zip is on GitHub Releases (not Hostinger).
 
 - File: \`${name}\` (${bytes} bytes)
@@ -257,7 +256,7 @@ Windows standalone sandbox is ready. Paperclip attachments are limited to 10 MB,
 
 Double-click \`Play.cmd\`. This is the API-off local-sim client, not \`scripts/deploy.sh\` windows. Do not treat this zip as a verified Windows run or a fleet-learning example.
 EOF
-)")"
+)"
     status="$(curl -sS -o "$tmp" -w '%{http_code}' "${auth_args[@]}" \
       -H "Content-Type: application/json" \
       --data-binary "$comment" \
@@ -307,7 +306,7 @@ wp="$(python3 -c 'import json,sys; print(json.dumps({
   "healthStatus": "unknown",
   "summary": sys.argv[2],
   "metadata": {"attachmentId": sys.argv[3], "excludeFromLearning": True},
-}))' "$title" "$summary Not a verified Windows run; excluded from fleet learning." "$attachment_id")"
+}))' "$title" "$summary Not a verified Windows run; excluded from fleet learning." "$attachment_id" | python3 "$REDACT_PY" --json)"
 status="$(curl -sS -o "$tmp" -w '%{http_code}' "${auth_args[@]}" \
   -H "Content-Type: application/json" \
   --data-binary "$wp" \
@@ -320,8 +319,7 @@ wp_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("id") or ""
 log "created artifact work product ${wp_id}"
 
 if [[ "$NO_COMMENT" -eq 0 ]]; then
-  comment="$(python3 -c 'import json,sys
-print(json.dumps({"body": sys.argv[1]}))' "$(cat <<EOF
+  comment="$(python3 "$REDACT_PY" --comment <<EOF
 Windows standalone sandbox is on this issue as a Clippy artifact.
 
 - File: \`${name}\`
@@ -331,7 +329,7 @@ Windows standalone sandbox is on this issue as a Clippy artifact.
 
 Double-click \`Play.cmd\`. This is the API-off local-sim client, not \`scripts/deploy.sh\` windows. Do not treat this zip as a verified Windows run or a fleet-learning example.
 EOF
-)")"
+)"
   status="$(curl -sS -o "$tmp" -w '%{http_code}' "${auth_args[@]}" \
     -H "Content-Type: application/json" \
     --data-binary "$comment" \

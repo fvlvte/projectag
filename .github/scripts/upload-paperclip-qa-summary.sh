@@ -32,6 +32,7 @@
 # and the PR labels), PAPERCLIP_QA_ARTIFACT (fallback artifact name),
 # PAPERCLIP_ISSUE_IDENTIFIER / PAPERCLIP_FALLBACK_ISSUE_ID (issue override).
 set -euo pipefail
+export PAPERCLIP_REDACT_PY="$(cd "$(dirname "$0")" && pwd)/paperclip-redact.py"
 
 for report in "$@"; do
   [[ -f "$report" ]] || {
@@ -48,12 +49,22 @@ export PAPERCLIP_API_URL="${api%/}"
 }
 
 exec python3 - "$@" <<'PY'
+import importlib.util
 import json
 import os
 import re
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
+
+_redact_path = Path(os.environ.get("PAPERCLIP_REDACT_PY") or "")
+if not _redact_path.is_file():
+    _redact_path = Path(os.environ.get("GITHUB_WORKSPACE") or ".") / ".github/scripts/paperclip-redact.py"
+_spec = importlib.util.spec_from_file_location("paperclip_redact", _redact_path)
+_redact_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_redact_mod)
+redact_obj = _redact_mod.redact_obj
 
 API = os.environ["PAPERCLIP_API_URL"]
 KEY = os.environ["PAPERCLIP_API_KEY"]
@@ -81,6 +92,8 @@ FOOTER = (
 
 
 def paperclip(method, path, body=None):
+    if isinstance(body, dict):
+        body = redact_obj(body)
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(API + path, data=data, method=method, headers={
         "Authorization": f"Bearer {KEY}", "Accept": "application/json", "Content-Type": "application/json"})
