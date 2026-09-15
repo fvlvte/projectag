@@ -97,21 +97,78 @@ def resolve_issue(branch: str):
     return issue
 
 
+def find_lead_agent_id():
+    if not COMPANY:
+        return None
+    st, agents = paperclip("GET", f"/api/companies/{COMPANY}/agents")
+    if not st or st >= 300 or not isinstance(agents, list):
+        return None
+    return next((a.get("id") for a in agents if a.get("name") == "Harmony Lead"), None)
+
+
+def find_qa_label_id():
+    if not COMPANY:
+        return None
+    st, labels = paperclip("GET", f"/api/companies/{COMPANY}/labels")
+    if not st or st >= 300 or not isinstance(labels, list):
+        return None
+    return next((l.get("id") for l in labels if l.get("name") == "qa"), None)
+
+
+def find_open_issue_by_title(title: str):
+    if not COMPANY:
+        return None
+    st, issues = paperclip("GET", f"/api/companies/{COMPANY}/issues")
+    if not st or st >= 300 or not isinstance(issues, list):
+        return None
+    return next((i for i in issues if i.get("title") == title and i.get("status") not in ("done", "cancelled")), None)
+
+
 def flag_conflict(branch: str, number: int, pr_url: str, paths: list[str]) -> None:
+    """Comment on the branch issue for context, and — the part that actually
+    gets someone to look — open (or reuse) a `CI infra:` issue assigned to
+    Harmony Lead, the same convention QA Analyst already uses for gaps it
+    cannot resolve itself. A comment alone never wakes anyone in this fleet
+    (no agent is woken directly by CI); routing through an assignment does."""
+    conflict_line = "Conflicting paths: " + (", ".join(paths) if paths else "(binary/encrypted content; check the branch directly)")
     issue = resolve_issue(branch)
-    if not issue:
-        print(f"  no Paperclip issue for branch {branch}; conflict not reported", file=sys.stderr)
-        return
-    body = redact("\n".join([
-        f"Master moved and PR #{number} ({branch}) no longer rebases clean: {pr_url}",
-        "Conflicting paths: " + (", ".join(paths) if paths else "(binary/encrypted content; check the branch directly)"),
-        "The rebase sweep left the branch untouched (`git rebase --abort`) rather than guess a resolution — this needs a real edit.",
-    ]))
-    status, resp = paperclip("POST", f"/api/issues/{issue['id']}/comments", {"body": body})
-    if status and status < 300:
-        print(f"  flagged {issue.get('identifier')}")
+    if issue:
+        body = redact("\n".join([
+            f"Master moved and PR #{number} ({branch}) no longer rebases clean: {pr_url}",
+            conflict_line,
+            "The rebase sweep left the branch untouched (`git rebase --abort`) rather than guess a resolution — this needs a real edit.",
+            "Filed as a `CI infra:` issue for Harmony Lead so this gets routed to a lane instead of sitting here.",
+        ]))
+        status, resp = paperclip("POST", f"/api/issues/{issue['id']}/comments", {"body": body})
+        if status and status < 300:
+            print(f"  commented on {issue.get('identifier')}")
+        else:
+            print(f"  could not comment on {issue.get('identifier')}: HTTP {status} {resp}", file=sys.stderr)
     else:
-        print(f"  could not comment on {issue.get('identifier')}: HTTP {status} {resp}", file=sys.stderr)
+        print(f"  no Paperclip issue for branch {branch}", file=sys.stderr)
+
+    title = f"CI infra: PR #{number} rebase conflict with master"
+    existing = find_open_issue_by_title(title)
+    if existing:
+        print(f"  {existing.get('identifier')} already open for this; not duplicating")
+        return
+    lead_id = find_lead_agent_id()
+    qa_label = find_qa_label_id()
+    body = redact("\n".join([
+        f"The rebase sweep ({pr_url}) found a real conflict rebasing PR #{number} ({branch}) onto master.",
+        conflict_line,
+        "Left untouched (`git rebase --abort`). Route to the lane that owns the conflicting surface, same as any other `CI infra:` gap; never assign it to the original implementer directly.",
+    ]))
+    payload = {"title": title, "description": body, "status": "todo", "priority": "medium"}
+    if lead_id:
+        payload["assigneeAgentId"] = lead_id
+    if qa_label:
+        payload["labelIds"] = [qa_label]
+    status, created = paperclip("POST", f"/api/companies/{COMPANY}/issues", payload) if COMPANY else (None, None)
+    if status and status < 300 and isinstance(created, dict):
+        print(f"  opened {created.get('identifier')} for Harmony Lead")
+    else:
+        print(f"  could not open a CI infra issue: HTTP {status} {created}", file=sys.stderr)
 
 
 def main() -> int:
