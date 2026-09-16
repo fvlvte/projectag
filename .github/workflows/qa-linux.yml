@@ -180,6 +180,8 @@ jobs:
           cargo test --features game,projectag-editor,actors --lib schedule_tests
       - name: Shared-core authority tests
         run: cargo test --manifest-path backend/Cargo.toml -p projectag-core --features authority
+      - name: Xworker stays-unarmed guard tests
+        run: cargo test --manifest-path backend/Cargo.toml -p projectag-service --features xworker xworker::tests::
 
   backend:
     name: backend (isolated PostgreSQL harnesses)
