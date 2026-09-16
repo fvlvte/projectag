@@ -247,8 +247,11 @@ def summarize(path):
     report = json.load(open(path, encoding="utf-8"))
     scenarios = report.get("scenarios", [])
     passed = [s["id"] for s in scenarios if s.get("result") == "pass"]
-    failed = [s["id"] for s in scenarios if s.get("result") != "pass"]
+    failed = [s["id"] for s in scenarios if s.get("result") in ("fail", "error")]
     blocked = [s["id"] for s in report.get("blocked", [])]
+    for s in scenarios:
+        if s.get("result") == "blocked" and s.get("id") not in blocked:
+            blocked.append(s["id"])
     not_run = [s["id"] for s in report.get("not_run", [])]
     host = report.get("host", {})
     renderer = host.get("renderer") or "not reported"
