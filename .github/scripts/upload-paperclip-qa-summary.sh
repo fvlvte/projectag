@@ -23,14 +23,18 @@
 #   * PAPERCLIP_NIGHTLY=1 -> the summaries go to the standing issue
 #     `QA nightly` (created when missing), never to a branch issue
 #
-# Issue lookup: resolve_issue() GET /api/issues/{ident}. GitHub-hosted
-# Python urllib has returned HTTP 403 on that GET while curl with the same
-# board key succeeded (upload-paperclip-artifact.sh); paperclip() retries
-# 403s with curl and logs the response class (json-issue / json-error / html /
-# text) without token text. No identifier in the branch still exits 0.
+# Issue lookup: resolve_issue() GET /api/issues/{ident} from the branch name
+# (`AGS-12-...`). When the branch has no `{PREFIX}-{n}` token and
+# PAPERCLIP_PR_NUMBER is set, it selects the issue that already has a
+# pull_request work product for that PR (`GET /api/issues/{id}/work-products`,
+# `externalId` or `/pull/{n}` URL). GitHub-hosted Python urllib has returned
+# HTTP 403 on issue GET while curl with the same board key succeeded
+# (upload-paperclip-artifact.sh); paperclip() retries 403s with curl and logs
+# the response class (json-issue / json-error / html / text) without token
+# text. No identifier and no matching PR work product still exits 0.
 #
 # Environment: PAPERCLIP_API_URL, PAPERCLIP_API_KEY (required),
-# PAPERCLIP_COMPANY_ID (labels, children, standing issue), PAPERCLIP_QA_WORKFLOW
+# PAPERCLIP_COMPANY_ID (labels, children, PR work-product lookup, standing issue), PAPERCLIP_QA_WORKFLOW
 # (`qa-linux` | `qa-windows-harness`), PAPERCLIP_QA_RESULT (`success` |
 # `failure` for this workflow's required jobs), PAPERCLIP_QA_JOBS (free text,
 # e.g. `static=success core=success`), PAPERCLIP_HEAD_SHA (PR head, not the
@@ -341,21 +345,31 @@ def compute_gate(pr):
     return gate, "Required: " + " · ".join(parts), pr_note
 
 
-def resolve_issue():
-    ident = os.environ.get("PAPERCLIP_ISSUE_IDENTIFIER", "")
-    if not ident:
-        m = re.search(r"([A-Za-z]+-[0-9]+)", REF)
-        ident = m.group(1).upper() if m else os.environ.get("PAPERCLIP_FALLBACK_ISSUE_ID", "")
-    if not ident:
-        print(f"no Paperclip issue identifier in ref {REF!r}; nothing posted", file=sys.stderr)
-        sys.exit(0)
-    status, issue = paperclip("GET", f"/api/issues/{ident}")
-    if status >= 300 or not isinstance(issue, dict):
-        print(
-            f"Paperclip issue lookup for {ident} failed HTTP {status} class={response_class(issue)}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+def work_product_list(payload):
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("workProducts", "items", "data"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return value
+    return []
+
+
+def pr_work_product_matches(wp, pr_number):
+    """True when a work product is the GitHub pull_request for this PR number."""
+    if not isinstance(wp, dict) or not pr_number:
+        return False
+    if wp.get("type") != "pull_request":
+        return False
+    ext = str(wp.get("externalId") or "").strip().lstrip("#")
+    if ext == pr_number:
+        return True
+    url = str(wp.get("url") or "")
+    return re.search(rf"/pulls?/{re.escape(pr_number)}(?:[/?#]|$)", url) is not None
+
+
+def route_active_child(issue):
     # Compatibility with children that inherited the parent's branch name: when the branch issue
     # is not the one being worked, and exactly one child is, the gate belongs to that child.
     if COMPANY and issue.get("status") not in ("in_progress", "in_review"):
@@ -363,9 +377,66 @@ def resolve_issue():
         if st < 300 and isinstance(issues, list):
             active = [i for i in issues if i.get("parentId") == issue["id"] and i.get("status") in ("in_progress", "in_review")]
             if len(active) == 1:
-                print(f"routing to child {active[0].get('identifier')} of {ident}")
+                print(f"routing to child {active[0].get('identifier')} of {issue.get('identifier')}")
                 return active[0]
     return issue
+
+
+def resolve_issue_by_pr():
+    """Issue that already has a pull_request work product for PAPERCLIP_PR_NUMBER."""
+    if not PR_NUMBER or not COMPANY:
+        return None
+    st, issues = paperclip("GET", f"/api/companies/{COMPANY}/issues")
+    if st >= 300 or not isinstance(issues, list):
+        print(
+            f"Paperclip issue list for PR #{PR_NUMBER} failed HTTP {st} class={response_class(issues)}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    matches = []
+    for candidate in issues:
+        iid = candidate.get("id")
+        if not iid:
+            continue
+        wst, products = paperclip("GET", f"/api/issues/{iid}/work-products")
+        if wst >= 300:
+            continue
+        if any(pr_work_product_matches(wp, PR_NUMBER) for wp in work_product_list(products)):
+            matches.append(candidate)
+    if not matches:
+        return None
+    active = [i for i in matches if i.get("status") in ("in_progress", "in_review")]
+    chosen = active if active else matches
+    if len(chosen) != 1:
+        print(
+            f"multiple Paperclip issues own a pull_request work product for PR #{PR_NUMBER}; nothing posted",
+            file=sys.stderr,
+        )
+        sys.exit(0)
+    print(f"routing via PR #{PR_NUMBER} pull_request work product to {chosen[0].get('identifier')}")
+    return chosen[0]
+
+
+def resolve_issue():
+    ident = os.environ.get("PAPERCLIP_ISSUE_IDENTIFIER", "")
+    if not ident:
+        m = re.search(r"([A-Za-z]+-[0-9]+)", REF)
+        ident = m.group(1).upper() if m else os.environ.get("PAPERCLIP_FALLBACK_ISSUE_ID", "")
+    if ident:
+        status, issue = paperclip("GET", f"/api/issues/{ident}")
+        if status >= 300 or not isinstance(issue, dict):
+            print(
+                f"Paperclip issue lookup for {ident} failed HTTP {status} class={response_class(issue)}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        return route_active_child(issue)
+    issue = resolve_issue_by_pr()
+    if issue:
+        return route_active_child(issue)
+    extra = f" and no pull_request work product for PR #{PR_NUMBER}" if PR_NUMBER else ""
+    print(f"no Paperclip issue identifier in ref {REF!r}{extra}; nothing posted", file=sys.stderr)
+    sys.exit(0)
 
 
 def label_id(name):
