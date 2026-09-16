@@ -124,6 +124,7 @@ jobs:
           python3 scripts/test_paperclip_redact.py
           python3 scripts/test_check_public_messages.py
           python3 scripts/test_upload_paperclip_qa_summary.py
+          python3 scripts/test_paperclip_human_qa.py
       - name: Public PR title and body scan
         if: ${{ github.event_name == 'pull_request' }}
         env:
