@@ -75,7 +75,9 @@ _TOPIC_RES = [
     re.compile(r"(?i)request-signing"),
     re.compile(r"(?i)x-projectag-request-(?:time|nonce|signature)"),
     re.compile(r"(?i)(?:^|[\s\"'`/(])hash\.rs\b"),
-    re.compile(r"(?i)\bhasher\b"),
+    # Underscore is a separator here (test names like foo_hasher_bar). Python
+    # ``\b`` treats ``_`` as a word character and would miss those.
+    re.compile(r"(?i)(?<![A-Za-z0-9])hasher(?![A-Za-z0-9])"),
     re.compile(r"(?i)\b(?:librandomx|randomx-rs|randomx_rs)\b"),
 ]
 
