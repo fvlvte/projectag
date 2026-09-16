@@ -122,7 +122,14 @@ jobs:
           python3 scripts/test_repo_trackers.py
           python3 scripts/test_paperclip_insights.py
           python3 scripts/test_paperclip_redact.py
+          python3 scripts/test_check_public_messages.py
           python3 scripts/test_upload_paperclip_qa_summary.py
+      - name: Public PR title and body scan
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: python3 .github/scripts/check-public-messages.py
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         continue-on-error: true
