@@ -25,9 +25,12 @@
 #
 # Issue lookup: resolve_issue() GET /api/issues/{ident}. GitHub-hosted
 # Python urllib has returned HTTP 403 on that GET while curl with the same
-# board key succeeded (upload-paperclip-artifact.sh); paperclip() retries
-# 403s with curl and logs the response class (json-issue / json-error / html /
-# text) without token text. No identifier in the branch still exits 0.
+# board key succeeded (upload-paperclip-artifact.sh); it has also raised a
+# raw transport error (OSError/URLError, e.g. "Network is unreachable") on a
+# GET that a same-run curl completed. paperclip() retries both a 403 and a
+# urllib transport failure with curl and logs the response class (json-issue /
+# json-error / html / text) without token text. No identifier in the branch
+# still exits 0.
 #
 # Environment: PAPERCLIP_API_URL, PAPERCLIP_API_KEY (required),
 # PAPERCLIP_COMPANY_ID (labels, children, standing issue), PAPERCLIP_QA_WORKFLOW
@@ -158,6 +161,11 @@ def paperclip_urllib(method, path, body=None):
             return resp.status, _parse_body(resp.read())
     except urllib.error.HTTPError as e:
         return e.code, _parse_body(e.read())
+    except (urllib.error.URLError, OSError) as e:
+        # No HTTP response at all (DNS, connect refused, ENETUNREACH). Seen on a
+        # GitHub-hosted runner where a same-run curl to the same host succeeded;
+        # paperclip() retries this with curl the same way it retries a 403.
+        return 597, f"urllib-transport: {e}"
 
 
 def paperclip_curl(method, path, body=None):
@@ -209,12 +217,14 @@ def paperclip_curl(method, path, body=None):
 def paperclip(method, path, body=None):
     # GitHub-hosted runners: Python urllib GET /api/issues/{ident} returned HTTP 403
     # for AGS-43 (run 35016792043) while curl with the same board key succeeded
-    # minutes later in upload-paperclip-artifact.sh. Retry 403s with curl.
+    # minutes later in upload-paperclip-artifact.sh. It has also raised a raw
+    # transport error (status 597 from paperclip_urllib, e.g. ENETUNREACH) on a
+    # runner where curl reached the same host in the same run. Retry both with curl.
     status, payload = paperclip_urllib(method, path, body)
-    if status == 403:
+    if status in (403, 597):
         curl_status, curl_payload = paperclip_curl(method, path, body)
         print(
-            f"Paperclip {method} {path} urllib HTTP 403 class={response_class(payload)}; "
+            f"Paperclip {method} {path} urllib HTTP {status} class={response_class(payload)}; "
             f"retry curl HTTP {curl_status} class={response_class(curl_payload)}",
             file=sys.stderr,
         )

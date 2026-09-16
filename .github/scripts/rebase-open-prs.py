@@ -80,6 +80,10 @@ def _paperclip_urllib(method: str, path: str, body: dict | None):
             return resp.status, _parse_body(resp.read())
     except urllib.error.HTTPError as e:
         return e.code, _parse_body(e.read())
+    except (urllib.error.URLError, OSError) as e:
+        # No HTTP response at all (DNS, connect refused, ENETUNREACH); paperclip()
+        # retries this with curl the same way it retries a 403.
+        return 597, f"urllib-transport: {e}"
 
 
 def _paperclip_curl(method: str, path: str, body: dict | None):
@@ -119,13 +123,15 @@ def _paperclip_curl(method: str, path: str, body: dict | None):
 def paperclip(method: str, path: str, body: dict | None = None):
     """GitHub-hosted runners: Python urllib has returned HTTP 403 on a GET that
     curl with the same board key succeeds on seconds later (same finding as
-    upload-paperclip-qa-summary.sh, PR #9, 2026-09-15). Retry 403s with curl."""
+    upload-paperclip-qa-summary.sh, PR #9, 2026-09-15), and has raised a raw
+    transport error (status 597 from _paperclip_urllib, e.g. ENETUNREACH) on a
+    runner where curl reached the same host in the same run. Retry both with curl."""
     if not KEY:
         return None, None
     status, payload = _paperclip_urllib(method, path, body)
-    if status == 403:
+    if status in (403, 597):
         curl_status, curl_payload = _paperclip_curl(method, path, body)
-        print(f"Paperclip {method} {path} urllib HTTP 403; retry curl HTTP {curl_status}", file=sys.stderr)
+        print(f"Paperclip {method} {path} urllib HTTP {status}; retry curl HTTP {curl_status}", file=sys.stderr)
         return curl_status, curl_payload
     return status, payload
 
