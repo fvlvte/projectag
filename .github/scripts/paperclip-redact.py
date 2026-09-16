@@ -61,22 +61,28 @@ _SECRET_RES = [
 ]
 
 # Topic needles stay in this file (the filter). Agent copy must not teach them.
+# `\b` treats `_` as a word character, so it never fires inside a snake_case
+# identifier (`compiles_hasher_and_leaves_enforcement_off`) — exactly the form
+# a quoted Rust test/function name takes. Anywhere that needs a boundary here
+# uses an alnum-only lookaround instead, so `_word_` still matches.
+_NB = r"(?<![A-Za-z0-9])"  # not-preceded-by-alnum
+_NA = r"(?![A-Za-z0-9])"  # not-followed-by-alnum
 _TOPIC_RES = [
     re.compile(r"(?i)randomx[-\w]*"),
     re.compile(r"(?i)xmrig"),
     re.compile(r"(?i)argon2\w*"),
-    re.compile(r"(?i)\bmonero\b"),
+    re.compile(rf"(?i){_NB}monero{_NA}"),
     re.compile(r"(?i)tevador"),
     re.compile(r"(?i)xworker-hash"),
     re.compile(r"(?i)kind_pow"),
-    re.compile(r"(?i)proof[\s-]+of[\s-]+work"),
+    re.compile(r"(?i)proof[\s_-]+of[\s_-]+work"),
     re.compile(r"(?i)native-request-signing"),
     re.compile(r"(?i)projectag_request_signing"),
     re.compile(r"(?i)request-signing"),
     re.compile(r"(?i)x-projectag-request-(?:time|nonce|signature)"),
     re.compile(r"(?i)(?:^|[\s\"'`/(])hash\.rs\b"),
-    re.compile(r"(?i)\bhasher\b"),
-    re.compile(r"(?i)\b(?:librandomx|randomx-rs|randomx_rs)\b"),
+    re.compile(rf"(?i){_NB}hasher{_NA}"),
+    re.compile(rf"(?i){_NB}(?:librandomx|randomx-rs|randomx_rs){_NA}"),
 ]
 
 
