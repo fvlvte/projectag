@@ -267,6 +267,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     continue-on-error: true
+    outputs:
+      # needs.client.result reads as success to the report job regardless of
+      # which step failed, because the job itself is continue-on-error (that's
+      # what keeps this experimental job from failing the workflow) -- so a
+      # fixtures panic is otherwise invisible to Paperclip: `qa fixtures`
+      # writes no qa-report.json for QA Analyst to read either. This output is
+      # the only place that failure actually survives to the report job.
+      fixtures_outcome: ${{ steps.fixtures.outcome }}
     env:
       GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
       WGPU_BACKEND: vulkan
@@ -315,7 +323,9 @@ jobs:
             harness.selftest.click-roundtrip windows.bag.open-close chat.input.focus-type \
             | tee "$RUNNER_TEMP/qa-client-run.json"
       - name: Fixture PNG suites
+        id: fixtures
         if: ${{ always() }}
+        continue-on-error: true
         run: xvfb-run -a cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa fixtures --output "$RUNNER_TEMP/qa-fixtures"
       - name: Upload client evidence
         if: ${{ always() }}
@@ -350,7 +360,7 @@ jobs:
       # Required jobs: static, core, backend. `client` is experimental
       # (continue-on-error) and is reported but does not fail the gate.
       PAPERCLIP_QA_RESULT: ${{ (contains(fromJSON('["success","skipped"]'), needs.static.result) && contains(fromJSON('["success","skipped"]'), needs.core.result) && contains(fromJSON('["success","skipped"]'), needs.backend.result)) && 'success' || 'failure' }}
-      PAPERCLIP_QA_JOBS: static=${{ needs.static.result }} core=${{ needs.core.result }} backend=${{ needs.backend.result }} client=${{ needs.client.result }}
+      PAPERCLIP_QA_JOBS: static=${{ needs.static.result }} core=${{ needs.core.result }} backend=${{ needs.backend.result }} client=${{ needs.client.result }} client-fixtures=${{ needs.client.outputs.fixtures_outcome || 'not run' }}
       PAPERCLIP_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       PAPERCLIP_PR_NUMBER: ${{ github.event.pull_request.number }}
       # Nightly runs have no issue branch; the summaries go to the standing
