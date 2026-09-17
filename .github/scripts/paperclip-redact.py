@@ -61,15 +61,21 @@ _SECRET_RES = [
 ]
 
 # Topic needles stay in this file (the filter). Agent copy must not teach them.
+# Python's ``\b`` treats ``_`` as a word character, so it never fires inside a
+# snake_case identifier -- exactly the shape a quoted Rust test or function name
+# takes when an agent pastes one into a public PR body. Needles that can appear
+# that way use an alnum-only boundary instead, so ``_word_`` still matches.
+_NB = r"(?<![A-Za-z0-9])"
+_NA = r"(?![A-Za-z0-9])"
 _TOPIC_RES = [
     re.compile(r"(?i)randomx[-\w]*"),
     re.compile(r"(?i)xmrig"),
     re.compile(r"(?i)argon2\w*"),
-    re.compile(r"(?i)\bmonero\b"),
+    re.compile(rf"(?i){_NB}monero{_NA}"),
     re.compile(r"(?i)tevador"),
     re.compile(r"(?i)xworker-hash"),
     re.compile(r"(?i)kind_pow"),
-    re.compile(r"(?i)proof[\s-]+of[\s-]+work"),
+    re.compile(r"(?i)proof[\s_-]+of[\s_-]+work"),
     re.compile(r"(?i)native-request-signing"),
     re.compile(r"(?i)projectag_request_signing"),
     re.compile(r"(?i)request-signing"),
@@ -78,7 +84,7 @@ _TOPIC_RES = [
     # Underscore is a separator here (test names like foo_hasher_bar). Python
     # ``\b`` treats ``_`` as a word character and would miss those.
     re.compile(r"(?i)(?<![A-Za-z0-9])hasher(?![A-Za-z0-9])"),
-    re.compile(r"(?i)\b(?:librandomx|randomx-rs|randomx_rs)\b"),
+    re.compile(rf"(?i){_NB}(?:librandomx|randomx-rs|randomx_rs){_NA}"),
 ]
 
 
