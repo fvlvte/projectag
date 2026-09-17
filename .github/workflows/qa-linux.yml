@@ -127,6 +127,8 @@ jobs:
           python3 scripts/test_paperclip_human_qa.py
           python3 scripts/test_paperclip_issue.py
           python3 scripts/test_rebase_open_prs.py
+          python3 scripts/test_import_character_creator_kit.py
+          python3 scripts/test-character-creator-assets.py
       - name: Public PR title and body scan
         if: ${{ github.event_name == 'pull_request' }}
         env:
