@@ -33,7 +33,9 @@
 # (URLError/OSError, "Network is unreachable") on a GET a same-run curl
 # completed. paperclip() retries both with curl and logs
 # the response class (json-issue / json-error / html / text) without token
-# text. No identifier and no matching PR work product still exits 0.
+# text. No identifier and no matching PR work product still exits 0, and so does
+# a board that cannot be reached at all: this step reports the gate, it is not
+# the gate, and a board outage must not red a run whose QA jobs all passed.
 #
 # Environment: PAPERCLIP_API_URL, PAPERCLIP_API_KEY (required),
 # PAPERCLIP_COMPANY_ID (labels, children, PR work-product lookup, standing issue), PAPERCLIP_QA_WORKFLOW
@@ -436,11 +438,24 @@ def resolve_issue():
     if ident:
         status, issue = paperclip("GET", f"/api/issues/{ident}")
         if status >= 300 or not isinstance(issue, dict):
+            # Reporting is not the gate. Every QA job may have passed and this
+            # step still cannot reach the board -- a hosted-runner 403, an
+            # outage, a rotated key. Failing here turns a green run red and
+            # blocks a merge for a reason that has nothing to do with the code,
+            # which is what happened to PR #29 on 2026-09-17 with
+            # PAPERCLIP_QA_RESULT=success. Say so loudly and let the run stand;
+            # the issue simply keeps `awaiting-ci`, which is visible on the
+            # board and in `cargo agx bus`.
+            print(
+                f"::warning title=Paperclip gate not posted::issue lookup for {ident} "
+                f"failed HTTP {status} class={response_class(issue)}; QA result "
+                f"{os.environ.get('PAPERCLIP_QA_RESULT', '?')} was not reported to the board"
+            )
             print(
                 f"Paperclip issue lookup for {ident} failed HTTP {status} class={response_class(issue)}",
                 file=sys.stderr,
             )
-            sys.exit(1)
+            sys.exit(0)
         return route_active_child(issue)
     issue = resolve_issue_by_pr()
     if issue:

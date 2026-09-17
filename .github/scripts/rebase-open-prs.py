@@ -4,10 +4,21 @@
 Runs from .github/workflows/pr-rebase-sweep.yml on every push to `master`
 (and on workflow_dispatch). This is pure git plumbing: a branch that already
 sits on the new master is left alone; one that rebases with no conflicts is
-force-pushed (with lease) straight back onto itself, so `qa-linux` /
-`qa-windows-harness` re-run naturally via the `synchronize` event and no
-agent is needed. A branch that hits a conflict is left completely untouched
-(`git rebase --abort`) and only logged here.
+force-pushed (with lease) straight back onto itself. A branch that hits a
+conflict is left completely untouched (`git rebase --abort`) and only logged
+here.
+
+The push does NOT start the PR's checks by itself. GitHub suppresses workflow
+triggers for anything pushed with the automatic `GITHUB_TOKEN`, so the
+`synchronize` this sweep was written to rely on never fires; what the PR gets
+instead is a run stuck at `action_required` with zero jobs, i.e. no checks at
+all. Until 2026-09-17 that silently removed CI from every open PR on every
+master push, and the recovery was a human noticing and re-running by hand. The
+sweep now dispatches the workflows for the branch itself after a successful
+push. `qa-windows-harness` is dispatched only for a PR that carries the
+`qa-windows` label, because its own jobs run unconditionally on
+`workflow_dispatch` and would otherwise start a Windows build for every
+rebased PR.
 
 Conflicts are not reported to Paperclip any more (2026-09-17). Git-crypt makes
 GitHub see every encrypted file as one opaque blob, so two PRs with disjoint
@@ -41,6 +52,9 @@ import subprocess
 import sys
 
 REPO = os.environ.get("GITHUB_REPOSITORY", "fvlvte/projectag")
+# Dispatched after a sweep push, because that push starts nothing on its own.
+CHECK_WORKFLOWS = ("qa-linux.yml",)
+LABELLED_WORKFLOWS = {"qa-windows": "qa-windows-harness.yml"}
 
 
 def run(*args: str, check: bool = True, cwd: str | None = None) -> subprocess.CompletedProcess:
@@ -62,12 +76,34 @@ def conflict_note(number: int, branch: str, paths: list[str]) -> str:
     )
 
 
+def workflows_for(labels: list) -> list[str]:
+    """Which workflows a rebased branch should have dispatched.
+
+    Label-gated workflows run unconditionally on `workflow_dispatch`, so they
+    are only dispatched for a PR that actually carries the label.
+    """
+    names = {l.get("name") if isinstance(l, dict) else l for l in labels or []}
+    wanted = list(CHECK_WORKFLOWS)
+    wanted += [wf for label, wf in LABELLED_WORKFLOWS.items() if label in names]
+    return wanted
+
+
+def dispatch_checks(number: int, branch: str, labels: list) -> None:
+    for workflow in workflows_for(labels):
+        out = run("gh", "workflow", "run", workflow, "--repo", REPO, "--ref", branch, check=False)
+        if out.returncode == 0:
+            print(f"PR #{number} {branch}: dispatched {workflow}")
+        else:
+            # Never fail the sweep for this; the PR is still correctly rebased.
+            print(f"PR #{number} {branch}: could not dispatch {workflow}: {out.stderr.strip()[-200:]}")
+
+
 def main() -> int:
     run("git", "fetch", "origin", "master")
     master = run("git", "rev-parse", "origin/master").stdout.strip()
     print(f"master is now {master[:12]}")
 
-    prs = gh_json("pr", "list", "--repo", REPO, "--state", "open", "--json", "number,headRefName,isDraft,isCrossRepository,url")
+    prs = gh_json("pr", "list", "--repo", REPO, "--state", "open", "--json", "number,headRefName,isDraft,isCrossRepository,url,labels")
     rebased = skipped = conflicted = 0
     for pr in prs:
         branch, number = pr["headRefName"], pr["number"]
@@ -108,6 +144,7 @@ def main() -> int:
                 skipped += 1
             else:
                 print(f"PR #{number} {branch}: rebased onto {master[:12]} and pushed")
+                dispatch_checks(number, branch, pr.get("labels"))
                 rebased += 1
         run("git", "worktree", "remove", "--force", wt, check=False)
 
