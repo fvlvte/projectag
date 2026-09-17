@@ -6,11 +6,20 @@ Runs from .github/workflows/pr-rebase-sweep.yml on every push to `master`
 sits on the new master is left alone; one that rebases with no conflicts is
 force-pushed (with lease) straight back onto itself, so `qa-linux` /
 `qa-windows-harness` re-run naturally via the `synchronize` event and no
-agent is needed. A branch that hits a real conflict is left completely
-untouched (`git rebase --abort`) and gets one comment on the Paperclip issue
-resolved from its branch name, naming the conflicting paths — real conflict
-resolution needs judgment, which is exactly what Harmony Lead's existing
-"review existing PRs" fan-out already does (docs/development/paperclip-fleet.md).
+agent is needed. A branch that hits a conflict is left completely untouched
+(`git rebase --abort`) and only logged here.
+
+Conflicts are not reported to Paperclip any more (2026-09-17). Git-crypt makes
+GitHub see every encrypted file as one opaque blob, so two PRs with disjoint
+plaintext edits to the same file "conflict" on every sweep; the fleet used to
+get a `CI infra: PR #<n> rebase conflict with master` issue per PR per master
+push, each becoming a Lead run, a child issue, an implementer run and a human
+review round for a rebase that the next master push undid again. Such a PR is
+merged from a laptop with `cargo agx repo merge <n>` instead: the git-crypt
+driver merges encrypted files as text, a real conflict goes to a coding CLI or,
+as a `Resolve conflicts:` issue, directly to a fleet lane, and
+`cargo agx repo prs` lists what is clean and what still needs a hand
+(docs/development/agx.md, "Repo").
 
 Skipped: draft PRs, cross-repository (fork) PRs (GITHUB_TOKEN cannot push to
 those), and branches already at the new master tip.
@@ -22,33 +31,16 @@ push; an agent whose local checkout is now behind reconciles that the same
 way it already does today (`cargo agx repo prove-rebase` / `rebase`).
 
 Environment: GH_TOKEN (gh CLI + git push over the checkout's stored
-credentials), PAPERCLIP_API_URL, PAPERCLIP_API_KEY, PAPERCLIP_COMPANY_ID —
-the Paperclip ones are optional; without PAPERCLIP_API_KEY, conflicts are
-still detected and left alone, just not reported anywhere.
+credentials). No Paperclip credentials are needed or read.
 """
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
-import re
 import subprocess
 import sys
-import tempfile
-import urllib.error
-import urllib.request
-from pathlib import Path
-
-HERE = Path(__file__).resolve().parent
-_spec = importlib.util.spec_from_file_location("paperclip_redact", HERE / "paperclip-redact.py")
-_redact_mod = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_redact_mod)  # type: ignore[union-attr]
-redact = _redact_mod.redact
 
 REPO = os.environ.get("GITHUB_REPOSITORY", "fvlvte/projectag")
-API = (os.environ.get("PAPERCLIP_API_URL") or "https://slategray-dolphin-616144.hostingersite.com").rstrip("/")
-KEY = os.environ.get("PAPERCLIP_API_KEY", "")
-COMPANY = os.environ.get("PAPERCLIP_COMPANY_ID", "")
 
 
 def run(*args: str, check: bool = True, cwd: str | None = None) -> subprocess.CompletedProcess:
@@ -60,168 +52,14 @@ def gh_json(*args: str):
     return json.loads(out.stdout)
 
 
-def _parse_body(raw):
-    if not raw:
-        return None
-    try:
-        return json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return raw.decode(errors="replace")[:400] if isinstance(raw, (bytes, bytearray)) else str(raw)[:400]
-
-
-def _paperclip_urllib(method: str, path: str, body: dict | None):
-    data = None if body is None else json.dumps(body).encode()
-    headers = {"Authorization": f"Bearer {KEY}", "Accept": "application/json"}
-    if data is not None:
-        headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(API + path, data=data, method=method, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            return resp.status, _parse_body(resp.read())
-    except urllib.error.HTTPError as e:
-        return e.code, _parse_body(e.read())
-
-
-def _paperclip_curl(method: str, path: str, body: dict | None):
-    """Same request shape as upload-paperclip-qa-summary.sh's curl fallback."""
-    out = tempfile.NamedTemporaryFile(delete=False)
-    out.close()
-    data_path = None
-    cmd = [
-        "curl", "-sS", "-o", out.name, "-w", "%{http_code}", "-X", method,
-        "-H", f"Authorization: Bearer {KEY}", "-H", "Accept: application/json", "--max-time", "60",
-    ]
-    try:
-        if body is not None:
-            with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as data_file:
-                json.dump(body, data_file)
-                data_path = data_file.name
-            cmd += ["-H", "Content-Type: application/json", "--data-binary", f"@{data_path}"]
-        cmd.append(API + path)
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=70)
-        try:
-            status = int((proc.stdout or "").strip() or "0")
-        except ValueError:
-            status = 599
-        payload = _parse_body(Path(out.name).read_bytes())
-        return (599, "curl-transport") if proc.returncode != 0 and status < 300 else (status, payload)
-    except FileNotFoundError:
-        return 599, "curl-missing"
-    finally:
-        for p in (out.name, data_path):
-            if p:
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
-
-
-def paperclip(method: str, path: str, body: dict | None = None):
-    """GitHub-hosted runners: Python urllib has returned HTTP 403 on a GET that
-    curl with the same board key succeeds on seconds later (same finding as
-    upload-paperclip-qa-summary.sh, PR #9, 2026-09-15). Retry 403s with curl."""
-    if not KEY:
-        return None, None
-    status, payload = _paperclip_urllib(method, path, body)
-    if status == 403:
-        curl_status, curl_payload = _paperclip_curl(method, path, body)
-        print(f"Paperclip {method} {path} urllib HTTP 403; retry curl HTTP {curl_status}", file=sys.stderr)
-        return curl_status, curl_payload
-    return status, payload
-
-
-def resolve_issue(branch: str):
-    """Same lookup as upload-paperclip-qa-summary.sh: identifier from the
-    branch name, redirected to the one active child when the branch issue
-    itself is not the one currently being worked."""
-    m = re.search(r"([A-Za-z]+-[0-9]+)", branch)
-    if not m:
-        return None
-    ident = m.group(1).upper()
-    status, issue = paperclip("GET", f"/api/issues/{ident}")
-    if not isinstance(issue, dict) or (status or 500) >= 300:
-        return None
-    if COMPANY and issue.get("status") not in ("in_progress", "in_review"):
-        st, issues = paperclip("GET", f"/api/companies/{COMPANY}/issues")
-        if st and st < 300 and isinstance(issues, list):
-            active = [i for i in issues if i.get("parentId") == issue["id"] and i.get("status") in ("in_progress", "in_review")]
-            if len(active) == 1:
-                return active[0]
-    return issue
-
-
-def find_lead_agent_id():
-    if not COMPANY:
-        return None
-    st, agents = paperclip("GET", f"/api/companies/{COMPANY}/agents")
-    if not st or st >= 300 or not isinstance(agents, list):
-        return None
-    return next((a.get("id") for a in agents if a.get("name") == "Harmony Lead"), None)
-
-
-def find_qa_label_id():
-    if not COMPANY:
-        return None
-    st, labels = paperclip("GET", f"/api/companies/{COMPANY}/labels")
-    if not st or st >= 300 or not isinstance(labels, list):
-        return None
-    return next((l.get("id") for l in labels if l.get("name") == "qa"), None)
-
-
-def find_open_issue_by_title(title: str):
-    if not COMPANY:
-        return None
-    st, issues = paperclip("GET", f"/api/companies/{COMPANY}/issues")
-    if not st or st >= 300 or not isinstance(issues, list):
-        return None
-    return next((i for i in issues if i.get("title") == title and i.get("status") not in ("done", "cancelled")), None)
-
-
-def flag_conflict(branch: str, number: int, pr_url: str, paths: list[str]) -> None:
-    """Comment on the branch issue for context, and — the part that actually
-    gets someone to look — open (or reuse) a `CI infra:` issue assigned to
-    Harmony Lead, the same convention QA Analyst already uses for gaps it
-    cannot resolve itself. A comment alone never wakes anyone in this fleet
-    (no agent is woken directly by CI); routing through an assignment does."""
-    conflict_line = "Conflicting paths: " + (", ".join(paths) if paths else "(binary/encrypted content; check the branch directly)")
-    issue = resolve_issue(branch)
-    if issue:
-        body = redact("\n".join([
-            f"Master moved and PR #{number} ({branch}) no longer rebases clean: {pr_url}",
-            conflict_line,
-            "The rebase sweep left the branch untouched (`git rebase --abort`) rather than guess a resolution — this needs a real edit.",
-            "Filed as a `CI infra:` issue for Harmony Lead so this gets routed to a lane instead of sitting here.",
-        ]))
-        status, resp = paperclip("POST", f"/api/issues/{issue['id']}/comments", {"body": body})
-        if status and status < 300:
-            print(f"  commented on {issue.get('identifier')}")
-        else:
-            print(f"  could not comment on {issue.get('identifier')}: HTTP {status} {resp}", file=sys.stderr)
-    else:
-        print(f"  no Paperclip issue for branch {branch}", file=sys.stderr)
-
-    title = f"CI infra: PR #{number} rebase conflict with master"
-    existing = find_open_issue_by_title(title)
-    if existing:
-        print(f"  {existing.get('identifier')} already open for this; not duplicating")
-        return
-    lead_id = find_lead_agent_id()
-    qa_label = find_qa_label_id()
-    body = redact("\n".join([
-        f"The rebase sweep ({pr_url}) found a real conflict rebasing PR #{number} ({branch}) onto master.",
-        conflict_line,
-        "Left untouched (`git rebase --abort`). Route to the lane that owns the conflicting surface, same as any other `CI infra:` gap; never assign it to the original implementer directly.",
-    ]))
-    payload = {"title": title, "description": body, "status": "todo", "priority": "medium"}
-    if lead_id:
-        payload["assigneeAgentId"] = lead_id
-    if qa_label:
-        payload["labelIds"] = [qa_label]
-    status, created = paperclip("POST", f"/api/companies/{COMPANY}/issues", payload) if COMPANY else (None, None)
-    if status and status < 300 and isinstance(created, dict):
-        print(f"  opened {created.get('identifier')} for Harmony Lead")
-    else:
-        print(f"  could not open a CI infra issue: HTTP {status} {created}", file=sys.stderr)
+def conflict_note(number: int, branch: str, paths: list[str]) -> str:
+    """One log line per conflicted PR; the laptop merge is the fix, not an issue."""
+    listed = ", ".join(paths) if paths else "(binary/encrypted content; check the branch directly)"
+    return (
+        f"PR #{number} {branch}: conflict on {len(paths)} path(s); left untouched. "
+        f"Merge it from a laptop: `cargo agx repo merge {number}` (encrypted files merge as text there). "
+        f"Paths: {listed}"
+    )
 
 
 def main() -> int:
@@ -258,8 +96,7 @@ def main() -> int:
         if result.returncode != 0:
             conflict_paths = run("git", "-C", wt, "diff", "--name-only", "--diff-filter=U", check=False).stdout.split()
             run("git", "-C", wt, "rebase", "--abort", check=False)
-            print(f"PR #{number} {branch}: real conflict ({len(conflict_paths)} path(s)); left untouched")
-            flag_conflict(branch, number, pr.get("url", ""), conflict_paths)
+            print(conflict_note(number, branch, conflict_paths))
             conflicted += 1
         else:
             push = run(
