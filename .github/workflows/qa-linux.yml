@@ -276,22 +276,18 @@ jobs:
           retention-days: 14
 
   client:
-    # Software-adapter client harness (xvfb + Mesa lavapipe). Experimental until
-    # a run proves the Bevy/wgpu adapter works on ubuntu-latest; see
-    # docs/proposals/paperclip-agent-fleet.md section 7.
+    # Software-adapter client harness (xvfb + Mesa lavapipe).
+    # Product assertions and fixture failures must fail this job. Semantic
+    # image review remains an explicit blocked result until QA Vision reviews
+    # the captured pixels; the non-strict runner permits that review handoff.
     name: client (software adapter harness + fixtures)
     needs: changes
     if: ${{ needs.changes.outputs.client == 'true' || github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
-    continue-on-error: true
     outputs:
-      # needs.client.result reads as success to the report job regardless of
-      # which step failed, because the job itself is continue-on-error (that's
-      # what keeps this experimental job from failing the workflow) -- so a
-      # fixtures panic is otherwise invisible to Paperclip: `qa fixtures`
-      # writes no qa-report.json for QA Analyst to read either. This output is
-      # the only place that failure actually survives to the report job.
+      # Keep the individual fixture result because fixtures produce PNGs,
+      # not scenario reports. A panic also fails the overall client job.
       fixtures_outcome: ${{ steps.fixtures.outcome }}
     env:
       GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
@@ -372,12 +368,11 @@ jobs:
         run: |
           cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --json \
             --output "$RUNNER_TEMP/qa-client" \
-            harness.selftest.click-roundtrip windows.bag.open-close chat.input.focus-type windows.creator-female-appearance windows.creator-female-short windows.creator-body-switch \
+            harness.selftest.click-roundtrip windows.bag.open-close chat.input.focus-type windows.creator-female-appearance windows.creator-female-compact windows.creator-female-short windows.creator-female-customization windows.creator-body-switch windows.creator-color-input movement.creator-female-walk \
             | tee "$RUNNER_TEMP/qa-client-run.json"
       - name: Fixture PNG suites
         id: fixtures
         if: ${{ always() }}
-        continue-on-error: true
         run: xvfb-run -a cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa fixtures --output "$RUNNER_TEMP/qa-fixtures"
       - name: Upload client evidence
         if: ${{ always() }}
@@ -409,10 +404,11 @@ jobs:
       PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
       PAPERCLIP_COMPANY_ID: ${{ secrets.PAPERCLIP_COMPANY_ID }}
       PAPERCLIP_QA_WORKFLOW: qa-linux
-      # Required jobs: static, core, backend. `client` is experimental
-      # (continue-on-error) and is reported but does not fail the gate.
-      PAPERCLIP_QA_RESULT: ${{ (contains(fromJSON('["success","skipped"]'), needs.static.result) && contains(fromJSON('["success","skipped"]'), needs.core.result) && contains(fromJSON('["success","skipped"]'), needs.backend.result)) && 'success' || 'failure' }}
+      # This is the automation gate into review, not final visual acceptance.
+      # A product assertion, harness error or fixture panic fails the gate.
+      PAPERCLIP_QA_RESULT: ${{ (contains(fromJSON('["success","skipped"]'), needs.static.result) && contains(fromJSON('["success","skipped"]'), needs.core.result) && contains(fromJSON('["success","skipped"]'), needs.backend.result) && contains(fromJSON('["success","skipped"]'), needs.client.result)) && 'success' || 'failure' }}
       PAPERCLIP_QA_JOBS: static=${{ needs.static.result }} core=${{ needs.core.result }} backend=${{ needs.backend.result }} client=${{ needs.client.result }} client-fixtures=${{ needs.client.outputs.fixtures_outcome || 'not run' }}
+      PAPERCLIP_QA_REQUIRED_ARTIFACTS: ${{ format('{0} {1}', needs.client.result != 'skipped' && 'projectag-qa-linux-evidence' || '', needs.backend.result != 'skipped' && 'projectag-qa-backend-evidence' || '') }}
       PAPERCLIP_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       PAPERCLIP_PR_NUMBER: ${{ github.event.pull_request.number }}
       # Nightly runs have no issue branch; the summaries go to the standing

@@ -154,7 +154,7 @@ jobs:
           [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point([int]($screen.Width / 2), [int]($screen.Height / 2))
           Set-Location $pack
           & (Join-Path $pack "agx.exe") qa run --pack . --output $results --driver harness --ready-timeout 240 --json `
-            harness.selftest.click-roundtrip windows.bag.open-close chat.input.focus-type windows.creator-female-appearance windows.creator-female-short windows.creator-body-switch `
+            harness.selftest.click-roundtrip windows.bag.open-close chat.input.focus-type windows.creator-female-appearance windows.creator-female-compact windows.creator-female-short windows.creator-female-customization windows.creator-body-switch windows.creator-color-input movement.creator-female-walk `
             | Tee-Object -FilePath (Join-Path $results "qa-run.json")
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -182,6 +182,7 @@ jobs:
       PAPERCLIP_FALLBACK_ISSUE_ID: ${{ secrets.PAPERCLIP_WINDOWS_ISSUE_ID }}
       PAPERCLIP_QA_WORKFLOW: qa-windows-harness
       PAPERCLIP_QA_ARTIFACT: projectag-qa-windows-evidence
+      PAPERCLIP_QA_REQUIRED_ARTIFACTS: projectag-qa-windows-evidence
       PAPERCLIP_QA_RESULT: ${{ needs.run-qa.result == 'success' && 'success' || 'failure' }}
       PAPERCLIP_QA_JOBS: build-qa-pack=${{ needs.build-qa-pack.result }} run-qa=${{ needs.run-qa.result }}
       PAPERCLIP_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}

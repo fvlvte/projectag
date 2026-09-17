@@ -45,6 +45,8 @@
 # merge commit), PAPERCLIP_PR_NUMBER, GH_TOKEN (reads the other workflow's run
 # and the PR labels), PAPERCLIP_QA_ARTIFACT (fallback artifact name),
 # PAPERCLIP_ISSUE_IDENTIFIER / PAPERCLIP_FALLBACK_ISSUE_ID (issue override).
+# PAPERCLIP_QA_REQUIRED_ARTIFACTS lists evidence artifact names that must
+# contain at least one qa-report.json when their owning jobs were selected.
 set -euo pipefail
 export PAPERCLIP_REDACT_PY="$(cd "$(dirname "$0")" && pwd)/paperclip-redact.py"
 
@@ -110,7 +112,11 @@ REQUIRED_WORKFLOWS = ["qa-linux", "qa-windows-harness"]
 STANDING_TITLE = "QA nightly"
 FOOTER = (
     "The artifact contains `qa-report.json`, `report.md`, per-scenario state/tree/event JSON, engine logs and raw plus "
-    "annotated screenshots. Software-adapter output (WARP, lavapipe) is client-harness evidence, "
+    "annotated screenshots, capture observations and visual review requests where required. "
+    "`QA gate: pass` means automation permits review; it is not final visual acceptance. "
+    "QA Vision must inspect the actual PNGs and attach validated, capture-bound review receipts for pending requests; "
+    "text-only agents consume those receipts and must not infer semantic visual passes from scene or layout data. "
+    "Software-adapter output (WARP, lavapipe) is client-harness evidence, "
     "not physical GPU, OS-input or hosted-backend acceptance; "
     "a renderer of `not reported` means the run did not record its adapter."
 )
@@ -257,8 +263,22 @@ def artifact_for(path):
     return os.environ.get("PAPERCLIP_QA_ARTIFACT") or "projectag-qa-linux-evidence"
 
 
+def needs_visual_review(scenario):
+    visual = scenario.get("visual_review") or {}
+    return (scenario.get("result") == "blocked"
+            and visual.get("automated_result") == "pass"
+            and bool(visual.get("requests")))
+
+
+def missing_required_artifacts(paths):
+    required = set(os.environ.get("PAPERCLIP_QA_REQUIRED_ARTIFACTS", "").split())
+    present = {artifact_for(str(path)) for path in paths}
+    return sorted(required - present)
+
+
 def summarize(path):
-    report = json.load(open(path, encoding="utf-8"))
+    with open(path, encoding="utf-8") as stream:
+        report = json.load(stream)
     scenarios = report.get("scenarios", [])
     passed = [s["id"] for s in scenarios if s.get("result") == "pass"]
     failed = [s["id"] for s in scenarios if s.get("result") in ("fail", "error")]
@@ -267,6 +287,7 @@ def summarize(path):
         if s.get("result") == "blocked" and s.get("id") not in blocked:
             blocked.append(s["id"])
     not_run = [s["id"] for s in report.get("not_run", [])]
+    visual_pending = [s["id"] for s in scenarios if needs_visual_review(s)]
     host = report.get("host", {})
     renderer = host.get("renderer") or "not reported"
     artifact = artifact_for(path)
@@ -274,6 +295,7 @@ def summarize(path):
         f"**{artifact}** — driver `{host.get('driver', 'unknown')}` on `{host.get('os', 'unknown')}`, renderer: `{renderer}`",
         f"- Passed: {', '.join(passed) if passed else 'none'}",
         f"- Failed/error: {', '.join(failed) if failed else 'none'}",
+        f"- Needs visual review: {', '.join(visual_pending) if visual_pending else 'none'}",
         f"- Blocked: {', '.join(blocked) if blocked else 'none'}",
         f"- Not run: {', '.join(not_run) if not_run else 'none'}",
         f"- Evidence artifact: `{artifact}` (`gh run download <run-id> --name {artifact}`)",
@@ -290,6 +312,11 @@ def summarize(path):
             parts.append(detail)
         if pngs:
             parts.append("screenshots: " + ", ".join(pngs))
+        requests = (s.get("visual_review") or {}).get("requests") or []
+        if requests:
+            parts.append("visual requests: " + ", ".join(str(request.get("packet", "unknown")) for request in requests))
+        if needs_visual_review(s):
+            parts.append("automation passed; QA Vision must review pixels and attach validated receipts before final acceptance")
         detail_lines.append("- " + " — ".join(parts))
     for s in report.get("blocked", []):
         detail_lines.append(f"- `{s['id']}`: blocked — {s.get('reason', '')}; next: {s.get('next_action', 'see report')}")
@@ -316,18 +343,28 @@ def pr_view():
     return github(f"/repos/{REPO}/pulls/{PR_NUMBER}")
 
 
-def compute_gate(pr):
+def compute_gate(pr, evidence_failed=False):
     """Returns (gate, required_line, next_line). Own workflow from env; qa-windows-harness only when labelled."""
-    labels = {l.get("name") for l in (pr or {}).get("labels", [])}
+    pr_verified = (bool(PR_NUMBER) and isinstance(pr, dict)
+                   and isinstance(pr.get("head"), dict)
+                   and isinstance(pr["head"].get("sha"), str) and bool(pr["head"]["sha"])
+                   and isinstance(pr.get("labels"), list))
+    labels = {l.get("name") for l in pr["labels"] if isinstance(l, dict)} if pr_verified else set()
     windows_required = "qa-windows" in labels
     others = other_workflow_states()
     parts = []
     outcomes = []
     own_jobs = f" ({JOBS})" if JOBS else ""
-    parts.append(f"{WORKFLOW}={OWN_RESULT}{own_jobs} {RUN_URL}")
-    outcomes.append("pass" if OWN_RESULT == "success" else "fail")
+    own_result = "failure" if evidence_failed else OWN_RESULT
+    evidence_note = " (scenario failure or missing required report)" if evidence_failed else ""
+    parts.append(f"{WORKFLOW}={own_result}{own_jobs}{evidence_note} {RUN_URL}")
+    outcomes.append("pass" if own_result == "success" else "fail")
     for name in REQUIRED_WORKFLOWS:
         if name == WORKFLOW:
+            continue
+        if name == "qa-windows-harness" and not pr_verified:
+            parts.append(f"{name}=pending (PR labels unavailable)")
+            outcomes.append("pending")
             continue
         if name == "qa-windows-harness" and not windows_required:
             parts.append(f"{name}=not labelled")
@@ -348,8 +385,11 @@ def compute_gate(pr):
         gate = "pending"
     else:
         gate = "pass"
-    if not PR_NUMBER or pr is None:
-        pr_note = "no pull request for this run"
+    if not pr_verified:
+        # Missing GitHub data cannot prove the head is current or that Windows
+        # QA is optional. Keep labels/status intact until that check succeeds.
+        pr_note = "pull request head/labels unavailable; review advancement is pending"
+        gate = "pending"
     elif pr.get("head", {}).get("sha") != HEAD:
         pr_note = f"superseded: PR head is now {pr['head']['sha'][:12]}"
         gate = "stale"
@@ -512,14 +552,15 @@ def standing_issue():
     return created
 
 
-def main():
-    reports = sys.argv[1:]
-    summaries = [summarize(p) for p in reports]
+def publish_reports(summaries, missing):
     summary_text = "\n\n".join(text for text, _ in summaries) if summaries else "No `qa-report.json` was produced by this run."
+    evidence_failed = any(failed for _, failed in summaries) or bool(missing)
+    if missing:
+        summary_text += "\n\nMissing required qa-report.json: " + ", ".join(missing)
 
     if NIGHTLY:
         issue = standing_issue()
-        result = "failure" if OWN_RESULT != "success" or any(f for _, f in summaries) else "success"
+        result = "failure" if OWN_RESULT != "success" or evidence_failed else "success"
         body = "\n".join([
             f"QA nightly: {result} — {WORKFLOW} {RUN_URL}",
             f"Head: `{HEAD[:12]}` (master) · Jobs: {JOBS or 'not reported'}",
@@ -537,18 +578,18 @@ def main():
 
     issue = resolve_issue()
     pr = pr_view()
-    gate, required_line, pr_note = compute_gate(pr)
+    gate, required_line, pr_note = compute_gate(pr, evidence_failed)
     branch = REF or "unknown"
     awaiting = label_id(AWAITING_LABEL)
     has_awaiting = awaiting is not None and awaiting in issue_label_ids(issue)
 
     if gate == "pending":
-        print(f"gate pending for {issue.get('identifier')} ({required_line}); the last required workflow posts the gate")
+        print(f"gate pending for {issue.get('identifier')} ({required_line}; {pr_note}); verified PR data and completed required workflows are needed")
         sys.exit(0)
 
     if gate == "pass":
         if issue.get("status") == "in_progress" and has_awaiting:
-            next_line = "Next: advanced to the review stages (label `awaiting-ci` removed); QA Analyst decides from this evidence."
+            next_line = "Next: advanced to the review stages (label `awaiting-ci` removed); QA Analyst checks automation and coverage. Pending visual requests require QA Vision pixel review and validated receipts before final acceptance."
         elif issue.get("status") == "in_review":
             next_line = "Next: QA Analyst decides from this evidence in one run."
         else:
@@ -584,6 +625,22 @@ def main():
         print(f"Paperclip QA gate comment failed HTTP {st} {resp}", file=sys.stderr)
         sys.exit(1)
     print(f"posted QA gate {gate} on {issue.get('identifier')}")
+
+
+def main():
+    reports = sys.argv[1:]
+    summaries = [summarize(path) for path in reports]
+    missing = missing_required_artifacts(reports)
+    evidence_failed = any(failed for _, failed in summaries) or bool(missing)
+    try:
+        publish_reports(summaries, missing)
+    finally:
+        # The other workflow reads our GitHub conclusion. An assertion failure
+        # must stay red even if all jobs reported success or the board lookup
+        # exits early. A board outage alone still leaves passing automation green.
+        if evidence_failed:
+            print("QA evidence gate failed: scenario failure or missing required report", file=sys.stderr)
+            sys.exit(1)
 
 
 if __name__ == "__main__":
