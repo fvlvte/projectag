@@ -29,7 +29,9 @@
 # pull_request work product for that PR (`GET /api/issues/{id}/work-products`,
 # `externalId` or `/pull/{n}` URL). GitHub-hosted Python urllib has returned
 # HTTP 403 on issue GET while curl with the same board key succeeded
-# (upload-paperclip-artifact.sh); paperclip() retries 403s with curl and logs
+# (upload-paperclip-artifact.sh); it has also raised a raw transport error
+# (URLError/OSError, "Network is unreachable") on a GET a same-run curl
+# completed. paperclip() retries both with curl and logs
 # the response class (json-issue / json-error / html / text) without token
 # text. No identifier and no matching PR work product still exits 0.
 #
@@ -162,6 +164,12 @@ def paperclip_urllib(method, path, body=None):
             return resp.status, _parse_body(resp.read())
     except urllib.error.HTTPError as e:
         return e.code, _parse_body(e.read())
+    except (urllib.error.URLError, OSError) as e:
+        # No HTTP response at all (DNS, connection refused, ENETUNREACH). Seen on
+        # a GitHub-hosted runner where a same-run curl to the same host
+        # succeeded, and it crashed the gate job instead of posting a comment.
+        # paperclip() retries this with curl the way it retries a 403.
+        return 597, f"urllib-transport: {e}"
 
 
 def paperclip_curl(method, path, body=None):
@@ -215,10 +223,10 @@ def paperclip(method, path, body=None):
     # for AGS-43 (run 35016792043) while curl with the same board key succeeded
     # minutes later in upload-paperclip-artifact.sh. Retry 403s with curl.
     status, payload = paperclip_urllib(method, path, body)
-    if status == 403:
+    if status in (403, 597):
         curl_status, curl_payload = paperclip_curl(method, path, body)
         print(
-            f"Paperclip {method} {path} urllib HTTP 403 class={response_class(payload)}; "
+            f"Paperclip {method} {path} urllib HTTP {status} class={response_class(payload)}; "
             f"retry curl HTTP {curl_status} class={response_class(curl_payload)}",
             file=sys.stderr,
         )
