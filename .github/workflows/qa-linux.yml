@@ -182,10 +182,16 @@ jobs:
         run: cargo check --features game
       - name: cargo check --features game,actors
         run: cargo check --features game,actors
-      - name: Schedule tests
-        run: |
-          cargo test --features game --lib schedule_tests
-          cargo test --features game,projectag-editor,actors --lib schedule_tests
+      - name: Unit tests (shipped feature set)
+        # Every `#[cfg(test)]` module in the crate, not only `schedule_tests`:
+        # the filter hid a mail_ui test that panicked on the blank world for
+        # the same reason the `qa fixtures` build did (2026-09-16).
+        run: cargo test --features game --lib
+      - name: Unit tests (editor, actors, authored worlds)
+        # Tests that read the authored Shores/Emberfall worlds are gated on
+        # `local-sim` (dev/QA simulation, never a shipped set); this variant
+        # is the only place they run.
+        run: cargo test --features game,projectag-editor,actors,local-sim --lib
       - name: Shared-core authority tests
         run: cargo test --manifest-path backend/Cargo.toml -p projectag-core --features authority
 
