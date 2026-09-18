@@ -154,7 +154,7 @@ jobs:
           [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point([int]($screen.Width / 2), [int]($screen.Height / 2))
           Set-Location $pack
           & (Join-Path $pack "agx.exe") qa run --pack . --output $results --driver harness --ready-timeout 240 --json `
-            harness.selftest.click-roundtrip windows.bag.open-close chat.input.focus-type windows.creator-female-appearance windows.creator-female-compact windows.creator-female-short windows.creator-female-customization windows.creator-body-switch windows.creator-color-input movement.creator-female-walk `
+            harness.selftest.click-roundtrip windows.bag.open-close chat.input.focus-type windows.creator-female-appearance windows.creator-female-compact windows.creator-female-short windows.creator-female-customization windows.creator-body-switch windows.creator-color-input windows.patchnotes-desktop windows.patchnotes-compact windows.patchnotes-short movement.creator-female-walk `
             | Tee-Object -FilePath (Join-Path $results "qa-run.json")
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
