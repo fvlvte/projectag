@@ -68,6 +68,7 @@ jobs:
               - '.github/workflows/qa-linux.yml'
             client:
               - 'src/**'
+              - 'backend/**'
               - 'assets/**'
               - 'qa/**'
               - 'tools/agx/**'
@@ -129,6 +130,7 @@ jobs:
           python3 scripts/test_rebase_open_prs.py
           python3 scripts/test_import_character_creator_kit.py
           python3 scripts/test-character-creator-assets.py
+          python3 backend/scripts/test-qa-hosted-client.py
       - name: Public PR title and body scan
         if: ${{ github.event_name == 'pull_request' }}
         env:
@@ -145,6 +147,8 @@ jobs:
           prefix-key: qa-linux-static
       - name: QA catalogue validation
         run: cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa validate
+      - name: Tool assertion and deployment contracts
+        run: cargo test --locked --manifest-path tools/agx/Cargo.toml
       - name: Content check
         run: cargo run --quiet --manifest-path backend/Cargo.toml -p projectag-core --bin content-check
 
@@ -276,22 +280,18 @@ jobs:
           retention-days: 14
 
   client:
-    # Software-adapter client harness (xvfb + Mesa lavapipe). Experimental until
-    # a run proves the Bevy/wgpu adapter works on ubuntu-latest; see
-    # docs/proposals/paperclip-agent-fleet.md section 7.
-    name: client (software adapter harness + fixtures)
+    # Software-adapter client harness (xvfb + Mesa lavapipe).
+    # Product assertions and fixture failures must fail this job. Semantic
+    # image review remains an explicit blocked result until QA Vision reviews
+    # the captured pixels; the non-strict runner permits that review handoff.
+    name: client (software adapter, hosted animation + fixtures)
     needs: changes
     if: ${{ needs.changes.outputs.client == 'true' || github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
-    continue-on-error: true
     outputs:
-      # needs.client.result reads as success to the report job regardless of
-      # which step failed, because the job itself is continue-on-error (that's
-      # what keeps this experimental job from failing the workflow) -- so a
-      # fixtures panic is otherwise invisible to Paperclip: `qa fixtures`
-      # writes no qa-report.json for QA Analyst to read either. This output is
-      # the only place that failure actually survives to the report job.
+      # Keep the individual fixture result because fixtures produce PNGs,
+      # not scenario reports. A panic also fails the overall client job.
       fixtures_outcome: ${{ steps.fixtures.outcome }}
     env:
       GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
@@ -312,7 +312,10 @@ jobs:
             libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-0 \
             libx11-dev libxi-dev \
             libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev libvulkan-dev \
-            xvfb mesa-vulkan-drivers libvulkan1 libgl1-mesa-dri vulkan-tools
+            xvfb mesa-vulkan-drivers libvulkan1 libgl1-mesa-dri vulkan-tools \
+            postgresql postgresql-contrib
+          sudo systemctl stop postgresql || true
+          echo "/usr/lib/postgresql/$(ls /usr/lib/postgresql | sort -V | tail -1)/bin" >> "$GITHUB_PATH"
           # winit/xkbcommon-dl dlopens libxkbcommon-x11.so.0 when the harness
           # sidecar starts. libxkbcommon-dev does not install that runtime
           # (AGS-48 / nightly 34945876232).
@@ -358,6 +361,7 @@ jobs:
           workspaces: |
             . -> target
             tools/agx -> target
+            backend -> target
           prefix-key: qa-linux-client
       - name: Software Vulkan adapter present
         run: |
@@ -368,16 +372,24 @@ jobs:
           grep -Ei 'llvmpipe|lavapipe' "$RUNNER_TEMP/vulkaninfo-summary.txt"
       - name: QA doctor
         run: cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa doctor --json
+      - name: Build isolated hosted fixture services
+        # Keep these available when the scenario runner reuses a client via
+        # --no-build; the fixture never connects to another developer server.
+        run: |
+          command -v initdb pg_ctl createdb psql python3
+          cargo build --locked --manifest-path backend/Cargo.toml \
+            -p auth-service --bin auth-service \
+            -p api-gateway --bin api-gateway \
+            -p projectag-service --bin projectag-service
       - name: Client harness scenarios
         run: |
           cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --json \
             --output "$RUNNER_TEMP/qa-client" \
-            harness.selftest.click-roundtrip windows.bag.open-close chat.input.focus-type windows.creator-female-appearance windows.creator-female-short windows.creator-body-switch \
+            harness.selftest.click-roundtrip windows.bag.open-close chat.input.focus-type windows.creator-female-appearance windows.creator-female-compact windows.creator-female-short windows.creator-female-customization windows.creator-body-switch windows.creator-color-input movement.creator-female-walk movement.hosted-animation-manifest \
             | tee "$RUNNER_TEMP/qa-client-run.json"
       - name: Fixture PNG suites
         id: fixtures
         if: ${{ always() }}
-        continue-on-error: true
         run: xvfb-run -a cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa fixtures --output "$RUNNER_TEMP/qa-fixtures"
       - name: Upload client evidence
         if: ${{ always() }}
@@ -387,6 +399,8 @@ jobs:
           path: |
             ${{ runner.temp }}/qa-client/**
             ${{ runner.temp }}/qa-client-run.json
+            !${{ runner.temp }}/qa-client/**/data/**
+            !${{ runner.temp }}/qa-client/**/backend/fixture.json
           if-no-files-found: warn
           retention-days: 14
       - name: Upload fixture renders
@@ -409,10 +423,11 @@ jobs:
       PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
       PAPERCLIP_COMPANY_ID: ${{ secrets.PAPERCLIP_COMPANY_ID }}
       PAPERCLIP_QA_WORKFLOW: qa-linux
-      # Required jobs: static, core, backend. `client` is experimental
-      # (continue-on-error) and is reported but does not fail the gate.
-      PAPERCLIP_QA_RESULT: ${{ (contains(fromJSON('["success","skipped"]'), needs.static.result) && contains(fromJSON('["success","skipped"]'), needs.core.result) && contains(fromJSON('["success","skipped"]'), needs.backend.result)) && 'success' || 'failure' }}
+      # This is the automation gate into review, not final visual acceptance.
+      # A product assertion, harness error or fixture panic fails the gate.
+      PAPERCLIP_QA_RESULT: ${{ (contains(fromJSON('["success","skipped"]'), needs.static.result) && contains(fromJSON('["success","skipped"]'), needs.core.result) && contains(fromJSON('["success","skipped"]'), needs.backend.result) && contains(fromJSON('["success","skipped"]'), needs.client.result)) && 'success' || 'failure' }}
       PAPERCLIP_QA_JOBS: static=${{ needs.static.result }} core=${{ needs.core.result }} backend=${{ needs.backend.result }} client=${{ needs.client.result }} client-fixtures=${{ needs.client.outputs.fixtures_outcome || 'not run' }}
+      PAPERCLIP_QA_REQUIRED_ARTIFACTS: ${{ format('{0} {1}', needs.client.result != 'skipped' && 'projectag-qa-linux-evidence' || '', needs.backend.result != 'skipped' && 'projectag-qa-backend-evidence' || '') }}
       PAPERCLIP_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       PAPERCLIP_PR_NUMBER: ${{ github.event.pull_request.number }}
       # Nightly runs have no issue branch; the summaries go to the standing
