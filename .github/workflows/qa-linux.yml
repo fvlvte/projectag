@@ -61,9 +61,14 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'build.rs'
+              - 'VERSION'
+              - 'BUILD'
+              - 'STORE_BUILD'
               - '.github/workflows/qa-linux.yml'
             backend:
               - 'backend/**'
+              - 'VERSION'
+              - 'BUILD'
               - 'Cargo.lock'
               - '.github/workflows/qa-linux.yml'
             client:
@@ -75,6 +80,9 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'build.rs'
+              - 'VERSION'
+              - 'BUILD'
+              - 'STORE_BUILD'
               - '.github/workflows/qa-linux.yml'
 
   static:
@@ -263,11 +271,15 @@ jobs:
           python3 - "$REPORT_DIR/qa-report.json" <<'PY'
           import json, sys
           report = json.load(open(sys.argv[1]))
-          failed = [s["id"] for s in report.get("scenarios", []) if s.get("result") == "fail"]
+          required = {"identity.web-accounts", "economy.ranking.playtime"}
+          passed = {s["id"] for s in report.get("scenarios", []) if s.get("result") == "pass"}
+          failed = required - passed
           for s in report.get("scenarios", []):
               print(f"{s['id']}: {s['result']} ({s.get('duration_ms', 0)} ms) {s.get('detail', '')[:120]}")
           for n in report.get("not_run", []):
               print(f"{n['id']}: not run: {n.get('reason', '')[:120]}")
+          if failed:
+              print("Required scenarios did not pass: " + ", ".join(sorted(failed)))
           sys.exit(1 if failed else 0)
           PY
       - name: Upload backend evidence
@@ -380,12 +392,13 @@ jobs:
           cargo build --locked --manifest-path backend/Cargo.toml \
             -p auth-service --bin auth-service \
             -p api-gateway --bin api-gateway \
-            -p projectag-service --bin projectag-service
+            -p projectag-service --bin projectag-service \
+            -p projectag-request-signing --bin sign-fixture-request
       - name: Client harness scenarios
         run: |
           cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --json \
             --output "$RUNNER_TEMP/qa-client" \
-            harness.selftest.click-roundtrip windows.bag.open-close chat.input.focus-type windows.creator-female-appearance windows.creator-female-compact windows.creator-female-short windows.creator-female-customization windows.creator-body-switch windows.creator-color-input movement.creator-female-walk movement.hosted-animation-manifest \
+            harness.selftest.click-roundtrip windows.bag.open-close chat.input.focus-type windows.creator-female-appearance windows.creator-female-compact windows.creator-female-short windows.creator-female-customization windows.creator-body-switch windows.creator-color-input windows.patchnotes-desktop windows.patchnotes-compact windows.patchnotes-short movement.creator-female-walk movement.hosted-animation-manifest \
             | tee "$RUNNER_TEMP/qa-client-run.json"
       - name: Fixture PNG suites
         id: fixtures
