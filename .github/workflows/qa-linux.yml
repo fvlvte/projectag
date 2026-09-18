@@ -260,18 +260,18 @@ jobs:
         # suites) stays a local run until its duration is measured.
         run: |
           cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run \
-            identity.web-accounts economy.ranking.playtime \
+            identity.web-accounts economy.ranking.playtime recovery.maintenance-rollout \
             || echo "::warning::backend scenario failures; see the report below"
           # Wrapped cargo/test output shares stdout with the runner, so the
           # report file named by output/qa/latest.txt is the machine-readable
           # result, not stdout.
           REPORT_DIR="$(cat output/qa/latest.txt)"
           mkdir -p "$RUNNER_TEMP/qa-backend/scenarios"
-          cp "$REPORT_DIR"/qa-report.json "$REPORT_DIR"/qa-report.md "$RUNNER_TEMP/qa-backend/scenarios/" 2>/dev/null || true
+          cp "$REPORT_DIR"/qa-report.json "$REPORT_DIR"/report.md "$RUNNER_TEMP/qa-backend/scenarios/" 2>/dev/null || true
           python3 - "$REPORT_DIR/qa-report.json" <<'PY'
           import json, sys
           report = json.load(open(sys.argv[1]))
-          required = {"identity.web-accounts", "economy.ranking.playtime"}
+          required = {"identity.web-accounts", "economy.ranking.playtime", "recovery.maintenance-rollout"}
           passed = {s["id"] for s in report.get("scenarios", []) if s.get("result") == "pass"}
           failed = required - passed
           for s in report.get("scenarios", []):
@@ -398,7 +398,7 @@ jobs:
         run: |
           cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --json \
             --output "$RUNNER_TEMP/qa-client" \
-            harness.selftest.click-roundtrip windows.bag.open-close chat.input.focus-type windows.creator-female-appearance windows.creator-female-compact windows.creator-female-short windows.creator-female-customization windows.creator-body-switch windows.creator-color-input windows.patchnotes-desktop windows.patchnotes-compact windows.patchnotes-short movement.creator-female-walk movement.hosted-animation-manifest \
+            harness.selftest.click-roundtrip windows.bag.open-close chat.input.focus-type windows.creator-female-appearance windows.creator-female-compact windows.creator-female-short windows.creator-female-customization windows.creator-body-switch windows.creator-color-input windows.patchnotes-desktop windows.patchnotes-compact windows.patchnotes-short recovery.update-handoff-desktop recovery.update-handoff-compact recovery.update-handoff-short recovery.maintenance-notice-desktop recovery.maintenance-notice-compact recovery.maintenance-notice-short movement.creator-female-walk movement.hosted-animation-manifest \
             | tee "$RUNNER_TEMP/qa-client-run.json"
       - name: Fixture PNG suites
         id: fixtures
