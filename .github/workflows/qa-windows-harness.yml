@@ -147,9 +147,9 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $pack = Join-Path $env:RUNNER_TEMP "qa-expanded\projectag-qa-windows"
-          $results = Join-Path $env:RUNNER_TEMP "qa-windows-results"
-          New-Item -ItemType Directory -Force -Path $results | Out-Null
-          python (Join-Path $pack "scripts\test-desktop-updater.py") --launcher (Join-Path $pack "start.exe") --output (Join-Path $results "desktop-updater-runtime.json")
+          $updater = Join-Path $env:RUNNER_TEMP "qa-windows-updater"
+          New-Item -ItemType Directory -Force -Path $updater | Out-Null
+          python (Join-Path $pack "scripts\test-desktop-updater.py") --launcher (Join-Path $pack "start.exe") --output (Join-Path $updater "desktop-updater-runtime.json")
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run Windows client harness
@@ -166,10 +166,15 @@ jobs:
           $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
           [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point([int]($screen.Width / 2), [int]($screen.Height / 2))
           Set-Location $pack
+          $runLog = Join-Path $env:RUNNER_TEMP "qa-windows-run.json"
           & (Join-Path $pack "agx.exe") qa run --pack . --output $results --driver harness --ready-timeout 240 --json `
             harness.selftest.click-roundtrip windows.bag.open-close chat.input.focus-type windows.creator-female-appearance windows.creator-female-compact windows.creator-female-short windows.creator-female-customization windows.creator-body-switch windows.creator-color-input windows.patchnotes-desktop windows.patchnotes-compact windows.patchnotes-short recovery.update-handoff-desktop recovery.update-handoff-compact recovery.update-handoff-short recovery.maintenance-notice-desktop recovery.maintenance-notice-compact recovery.maintenance-notice-short movement.creator-female-walk `
-            | Tee-Object -FilePath (Join-Path $results "qa-run.json")
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            | Tee-Object -FilePath $runLog
+          $qaExit = $LASTEXITCODE
+          if (Test-Path -LiteralPath $runLog) {
+            Copy-Item -LiteralPath $runLog -Destination (Join-Path $results "qa-run.json")
+          }
+          if ($qaExit -ne 0) { exit $qaExit }
 
       - name: Upload QA evidence
         if: ${{ always() }}
@@ -178,6 +183,7 @@ jobs:
           name: projectag-qa-windows-evidence
           path: |
             ${{ runner.temp }}/qa-windows-results/**
+            ${{ runner.temp }}/qa-windows-updater/**
           if-no-files-found: warn
           retention-days: 14
 
