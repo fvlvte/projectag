@@ -147,8 +147,8 @@ jobs:
           prefix-key: qa-linux-static
       - name: QA catalogue validation
         run: cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa validate
-      - name: QA assertion and boundary contracts
-        run: cargo test --locked --manifest-path tools/agx/Cargo.toml qa::
+      - name: Tool assertion and deployment contracts
+        run: cargo test --locked --manifest-path tools/agx/Cargo.toml
       - name: Content check
         run: cargo run --quiet --manifest-path backend/Cargo.toml -p projectag-core --bin content-check
 
