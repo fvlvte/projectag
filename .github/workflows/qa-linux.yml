@@ -68,6 +68,7 @@ jobs:
               - '.github/workflows/qa-linux.yml'
             client:
               - 'src/**'
+              - 'backend/**'
               - 'assets/**'
               - 'qa/**'
               - 'tools/agx/**'
@@ -129,6 +130,7 @@ jobs:
           python3 scripts/test_rebase_open_prs.py
           python3 scripts/test_import_character_creator_kit.py
           python3 scripts/test-character-creator-assets.py
+          python3 backend/scripts/test-qa-hosted-client.py
       - name: Public PR title and body scan
         if: ${{ github.event_name == 'pull_request' }}
         env:
@@ -145,6 +147,8 @@ jobs:
           prefix-key: qa-linux-static
       - name: QA catalogue validation
         run: cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa validate
+      - name: QA assertion and boundary contracts
+        run: cargo test --locked --manifest-path tools/agx/Cargo.toml qa::
       - name: Content check
         run: cargo run --quiet --manifest-path backend/Cargo.toml -p projectag-core --bin content-check
 
@@ -280,7 +284,7 @@ jobs:
     # Product assertions and fixture failures must fail this job. Semantic
     # image review remains an explicit blocked result until QA Vision reviews
     # the captured pixels; the non-strict runner permits that review handoff.
-    name: client (software adapter harness + fixtures)
+    name: client (software adapter, hosted animation + fixtures)
     needs: changes
     if: ${{ needs.changes.outputs.client == 'true' || github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
@@ -308,7 +312,10 @@ jobs:
             libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-0 \
             libx11-dev libxi-dev \
             libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev libvulkan-dev \
-            xvfb mesa-vulkan-drivers libvulkan1 libgl1-mesa-dri vulkan-tools
+            xvfb mesa-vulkan-drivers libvulkan1 libgl1-mesa-dri vulkan-tools \
+            postgresql postgresql-contrib
+          sudo systemctl stop postgresql || true
+          echo "/usr/lib/postgresql/$(ls /usr/lib/postgresql | sort -V | tail -1)/bin" >> "$GITHUB_PATH"
           # winit/xkbcommon-dl dlopens libxkbcommon-x11.so.0 when the harness
           # sidecar starts. libxkbcommon-dev does not install that runtime
           # (AGS-48 / nightly 34945876232).
@@ -354,6 +361,7 @@ jobs:
           workspaces: |
             . -> target
             tools/agx -> target
+            backend -> target
           prefix-key: qa-linux-client
       - name: Software Vulkan adapter present
         run: |
@@ -364,11 +372,20 @@ jobs:
           grep -Ei 'llvmpipe|lavapipe' "$RUNNER_TEMP/vulkaninfo-summary.txt"
       - name: QA doctor
         run: cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa doctor --json
+      - name: Build isolated hosted fixture services
+        # Keep these available when the scenario runner reuses a client via
+        # --no-build; the fixture never connects to another developer server.
+        run: |
+          command -v initdb pg_ctl createdb psql python3
+          cargo build --locked --manifest-path backend/Cargo.toml \
+            -p auth-service --bin auth-service \
+            -p api-gateway --bin api-gateway \
+            -p projectag-service --bin projectag-service
       - name: Client harness scenarios
         run: |
           cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --json \
             --output "$RUNNER_TEMP/qa-client" \
-            harness.selftest.click-roundtrip windows.bag.open-close chat.input.focus-type windows.creator-female-appearance windows.creator-female-compact windows.creator-female-short windows.creator-female-customization windows.creator-body-switch windows.creator-color-input movement.creator-female-walk \
+            harness.selftest.click-roundtrip windows.bag.open-close chat.input.focus-type windows.creator-female-appearance windows.creator-female-compact windows.creator-female-short windows.creator-female-customization windows.creator-body-switch windows.creator-color-input movement.creator-female-walk movement.hosted-animation-manifest \
             | tee "$RUNNER_TEMP/qa-client-run.json"
       - name: Fixture PNG suites
         id: fixtures
@@ -382,6 +399,8 @@ jobs:
           path: |
             ${{ runner.temp }}/qa-client/**
             ${{ runner.temp }}/qa-client-run.json
+            !${{ runner.temp }}/qa-client/**/data/**
+            !${{ runner.temp }}/qa-client/**/backend/fixture.json
           if-no-files-found: warn
           retention-days: 14
       - name: Upload fixture renders
