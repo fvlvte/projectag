@@ -26,6 +26,10 @@ ZIP="${STANDALONE_ZIP:-}"
 ROLLING_ZIP="${STANDALONE_ROLLING_ZIP:-dist/engine-windows-standalone.zip}"
 [[ -f "$ROLLING_ZIP" ]] || die "missing rolling zip: $ROLLING_ZIP"
 
+CRYPTO="$(cd "$(dirname "$0")" && pwd)/standalone_zip_crypto.py"
+python3 "$CRYPTO" verify "$ZIP"
+python3 "$CRYPTO" verify "$ROLLING_ZIP"
+
 MAX_ATTEMPTS="${GH_RELEASE_ATTEMPTS:-4}"
 DELAY_SECS="${GH_RELEASE_DELAY_SECS:-5}"
 [[ "$MAX_ATTEMPTS" -ge 1 ]] || die "GH_RELEASE_ATTEMPTS must be >= 1"
@@ -63,7 +67,7 @@ notes_commit() {
   cat <<EOF
 API-off Windows local-sim sandbox for \`${GITHUB_SHA}\`.
 
-Double-click \`Play.cmd\`. This is not the production patcher zip from \`scripts/deploy.sh\`.
+Extract with 7-Zip and the separately shared QA password, then double-click \`Play.cmd\`. This is not the production patcher zip from \`scripts/deploy.sh\`.
 
 Anonymous download is Cloudflare R2, not this GitHub backup.
 Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}

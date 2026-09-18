@@ -99,7 +99,7 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y git-crypt pkg-config libssl-dev
+          sudo apt-get install -y git-crypt pkg-config libssl-dev nano
       - name: Unlock git-crypt
         run: |
           test -n "${GITCRYPT_KEY_B64}" || { echo "Add repository secret GITCRYPT_KEY_B64"; exit 1; }
@@ -119,6 +119,11 @@ jobs:
           # is fetched with the job token explicitly; only the tree diff is needed.
           git fetch --depth=1 "https://x-access-token:${FETCH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BASE_SHA"
           python3 scripts/check-bloat.py --base "$BASE_SHA" --no-merge-base
+      - name: Standalone ZIP encryption regression
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zip-crypto"
+          "$RUNNER_TEMP/zip-crypto/bin/pip" install pyzipper==0.4.0
+          "$RUNNER_TEMP/zip-crypto/bin/python" scripts/test_standalone_zip_crypto.py
       - name: Node source contracts
         run: |
           set -o pipefail
@@ -157,6 +162,16 @@ jobs:
         run: cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa validate
       - name: Tool assertion and deployment contracts
         run: cargo test --locked --manifest-path tools/agx/Cargo.toml
+      - name: Patch-note nano and deploy terminal flow
+        run: python3 tools/agx/tests/patchnotes_terminal.py --agx tools/agx/target/debug/agx --report "$RUNNER_TEMP/patchnotes-terminal.json"
+      - name: Upload patch-note terminal evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: patchnotes-terminal-evidence
+          path: ${{ runner.temp }}/patchnotes-terminal.*
+          if-no-files-found: warn
+          retention-days: 14
       - name: Content check
         run: cargo run --quiet --manifest-path backend/Cargo.toml -p projectag-core --bin content-check
 

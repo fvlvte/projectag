@@ -168,7 +168,7 @@ fi
 
 name="$(basename "$FILE")"
 title="${PAPERCLIP_ARTIFACT_TITLE:-Windows standalone ${name}}"
-summary="${PAPERCLIP_ARTIFACT_SUMMARY:-API-off local-sim Windows sandbox. Double-click Play.cmd. Not the production patcher zip.}"
+summary="${PAPERCLIP_ARTIFACT_SUMMARY:-API-off local-sim Windows sandbox. Extract with 7-Zip and the separately shared QA password, then run Play.cmd. Not the production patcher zip.}"
 bytes="$(python3 -c 'import os,sys; print(os.path.getsize(sys.argv[1]))' "$FILE")"
 download_url="$(github_zip_url)"
 
@@ -188,6 +188,8 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   fi
   exit 0
 fi
+
+python3 "$(dirname "$0")/standalone_zip_crypto.py" verify "$FILE"
 
 auth_args=(-H "Authorization: Bearer ${KEY}" -H "Accept: application/json")
 if [[ -n "${PAPERCLIP_RUN_ID:-}" ]]; then
@@ -247,14 +249,14 @@ post_github_link() {
   if [[ "$NO_COMMENT" -eq 0 ]]; then
     local comment
     comment="$(python3 "$REDACT_PY" --comment <<EOF
-Windows standalone sandbox is ready. Paperclip attachments are limited to 10 MB, so the zip is on GitHub Releases (not Hostinger).
+Windows standalone sandbox is ready. Paperclip attachments are limited to 10 MB, so the encrypted zip is at the download link below.
 
 - File: \`${name}\` (${bytes} bytes)
 - Commit: \`${sha}\`
 - Download: ${download_url}
 - Workflow: ${run_url}
 
-Double-click \`Play.cmd\`. This is the API-off local-sim client, not \`scripts/deploy.sh\` windows. Do not treat this zip as a verified Windows run or a fleet-learning example.
+Extract with 7-Zip and the separately shared QA password, then run \`Play.cmd\`. This is the API-off local-sim client, not \`scripts/deploy.sh\` windows. Do not treat this zip as a verified Windows run or a fleet-learning example.
 EOF
 )"
     status="$(curl -sS -o "$tmp" -w '%{http_code}' "${auth_args[@]}" \
@@ -327,7 +329,7 @@ Windows standalone sandbox is on this issue as a Clippy artifact.
 - Download from this issue Output / company Artifacts (not Hostinger disk).
 - Workflow: ${run_url}
 
-Double-click \`Play.cmd\`. This is the API-off local-sim client, not \`scripts/deploy.sh\` windows. Do not treat this zip as a verified Windows run or a fleet-learning example.
+Extract with 7-Zip and the separately shared QA password, then run \`Play.cmd\`. This is the API-off local-sim client, not \`scripts/deploy.sh\` windows. Do not treat this zip as a verified Windows run or a fleet-learning example.
 EOF
 )"
   status="$(curl -sS -o "$tmp" -w '%{http_code}' "${auth_args[@]}" \

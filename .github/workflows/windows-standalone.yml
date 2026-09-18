@@ -57,6 +57,18 @@ jobs:
       - name: Unlock git-crypt
         run: bash .github/scripts/git-crypt-unlock.sh
 
+      - name: Require standalone ZIP password
+        env:
+          WINDOWS_STANDALONE_ZIP_PASSWORD: ${{ secrets.WINDOWS_STANDALONE_ZIP_PASSWORD }}
+        run: python3 .github/scripts/standalone_zip_crypto.py check-password
+
+      - name: Install and test ZIP encryption
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zip-crypto"
+          "$RUNNER_TEMP/zip-crypto/bin/pip" install pyzipper==0.4.0
+          echo "$RUNNER_TEMP/zip-crypto/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/zip-crypto/bin/python" scripts/test_standalone_zip_crypto.py
+
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -88,6 +100,12 @@ jobs:
         id: pack
         run: bash scripts/pack-windows-standalone.sh
 
+      - name: Encrypt standalone ZIP
+        id: encryption
+        env:
+          WINDOWS_STANDALONE_ZIP_PASSWORD: ${{ secrets.WINDOWS_STANDALONE_ZIP_PASSWORD }}
+        run: python3 .github/scripts/standalone_zip_crypto.py encrypt dist/engine-windows-standalone.zip
+
       - name: Name per-commit zip
         id: zip
         run: |
@@ -102,7 +120,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: engine-windows-standalone
-          path: dist/engine-windows-standalone-*.zip
+          path: ${{ steps.zip.outputs.zip }}
           if-no-files-found: error
           retention-days: 14
 
@@ -120,7 +138,7 @@ jobs:
 
       - name: Publish GitHub prerelease backup
         id: github_release
-        if: ${{ !cancelled() && steps.pack.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.encryption.outcome == 'success' && steps.zip.outcome == 'success' }}
         continue-on-error: true
         env:
           STANDALONE_TAG: ${{ steps.zip.outputs.tag }}
@@ -130,7 +148,7 @@ jobs:
 
       - name: Upload Clippy artifact
         id: clippy
-        if: ${{ !cancelled() && steps.pack.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.encryption.outcome == 'success' && steps.zip.outcome == 'success' }}
         env:
           PAPERCLIP_API_URL: ${{ secrets.PAPERCLIP_API_URL }}
           PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
@@ -151,11 +169,12 @@ jobs:
         run: bash .github/scripts/upload-paperclip-artifact.sh --notify-failure
 
       - name: Job summary
-        if: ${{ !cancelled() && steps.pack.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.encryption.outcome == 'success' && steps.zip.outcome == 'success' }}
         run: |
           {
             echo "## Windows standalone sandbox"
             echo
+            echo "- Encrypted ZIP: extract with 7-Zip and the separately shared QA password."
             echo "- Commit: \`${GITHUB_SHA}\`"
             echo "- R2: ${{ steps.public.outputs.url }}"
             echo "- Clippy: download URL on the issue (Paperclip attachments max 10 MB)"

@@ -14,6 +14,8 @@ import os
 import sys
 from typing import Any
 
+from standalone_zip_crypto import require_encrypted
+
 from r2_client import (
     DEFAULT_MAX_BYTES,
     R2Client,
@@ -139,6 +141,7 @@ def publish(path: str, tag: str, *, dry_run: bool) -> int:
             }
         )
         return 0
+    require_encrypted(path)
     client = R2Client(default_bucket=DEFAULT_BUCKET)
     try:
         client.put_file(
