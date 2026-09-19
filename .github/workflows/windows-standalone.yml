@@ -131,8 +131,12 @@ jobs:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || 'd9513a4189039ef82fa87e6a03465344' }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET || 'engine-windows-standalone' }}
+          # The wrapper forces R2_BUCKET from this name, so a stale R2_BUCKET in
+          # the environment can never send QA zips to the CDN bucket.
+          WINDOWS_STANDALONE_R2_BUCKET: ${{ secrets.R2_BUCKET || 'engine-windows-standalone' }}
           R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL || 'https://builds.projectag.online' }}
+          # One QA prefix may not claim the account-wide 10 GB free tier.
+          R2_MAX_BYTES: ${{ secrets.R2_MAX_BYTES || '2000000000' }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
         run: bash .github/scripts/publish-r2-windows-zip.sh "${{ steps.zip.outputs.zip }}" "${{ steps.zip.outputs.tag }}"
 

@@ -8,19 +8,39 @@ import http.client
 import os
 import sys
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from xml.etree import ElementTree as ET
 
 EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
+# A bucket or operation outside the token's scope, from a reporter's view.
+DENIED_STATUS = (401, 403, 501)
 DEFAULT_ACCOUNT_ID = "d9513a4189039ef82fa87e6a03465344"
 DEFAULT_REGION = "auto"
 MAX_SINGLE_PUT = 5 * 1024 * 1024 * 1024
 PRESIGN_SECONDS = 7 * 24 * 60 * 60
 DEFAULT_MAX_BYTES = 10_000_000_000
+# Cloudflare's free tier is per ACCOUNT, summed over every bucket below; no
+# single bucket or prefix may be budgeted the whole of it.
+ACCOUNT_MAX_BYTES = 10_000_000_000
+ACCOUNT_BUCKETS = ("projectag-cdn", "engine-windows-standalone", "projectag-inbox")
 
 # AWS docs: Authenticating Requests (AWS Signature Version 4), GET with Range.
 _AWS_GET_RANGE_SIGNATURE = "f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41"
+# ListMultipartUploads signs the empty-valued `uploads` sub-resource as `uploads=`.
+LIST_UPLOADS_CANONICAL_QUERY = "max-uploads=1000&prefix=dl%2F&uploads="
+
+
+class R2AccessDenied(Exception):
+    """The token is not scoped to this bucket or operation.
+
+    Cloudflare answers 401 for a bucket outside an S3 User API token's scope
+    and 403/501 for an operation it may not perform; all three mean the same
+    thing to a reporter (HTTP 401/403/501).
+
+    Account-wide reporting must degrade to UNMEASURED rather than report a
+    smaller total, so the affected calls raise this instead of dying.
+    """
 
 
 def log(msg: str) -> None:
@@ -108,6 +128,96 @@ def plan_prune(
         "keep_bytes": used,
         "delete_bytes": sum(o["Size"] for o in deleted),
         "over_budget": used > max_bytes,
+    }
+
+
+def parse_timestamp(stamp: str) -> datetime | None:
+    """Parse an S3 ISO-8601 LastModified/Initiated value, or None if unusable."""
+    text = (stamp or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _normalize_objects(objects: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    by_key: dict[str, dict[str, Any]] = {}
+    for obj in objects:
+        key = str(obj.get("Key") or "")
+        if not key:
+            continue
+        by_key[key] = {
+            "Key": key,
+            "Size": int(obj.get("Size") or 0),
+            "LastModified": str(obj.get("LastModified") or ""),
+        }
+    return by_key
+
+
+def plan_prune_keep_newest(
+    objects: list[dict[str, Any]],
+    keep_keys: list[str],
+    max_bytes: int,
+    keep_count: int,
+    keep_age_days: int = 0,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Retain keep_keys, the `keep_count` newest others and anything younger
+    than `keep_age_days`; delete the rest, then trim to `max_bytes`.
+
+    Unlike plan_prune this converges on a small prefix instead of filling the
+    budget: count and age are the primary retention rules and the byte cap is
+    only a backstop. `pinned_bytes` is reported separately and `over_budget`
+    means the pinned keys alone no longer fit, which no prune can fix.
+    """
+    keep_lookup = {key for key in keep_keys if key}
+    by_key = _normalize_objects(objects)
+    pinned = [obj for key, obj in by_key.items() if key in keep_lookup]
+    others = [obj for key, obj in by_key.items() if key not in keep_lookup]
+    others.sort(key=lambda o: (o["LastModified"], o["Key"]), reverse=True)
+    floor = None
+    if keep_age_days > 0:
+        floor = (now or utc_now()) - timedelta(days=keep_age_days)
+    retained: list[dict[str, Any]] = []
+    deleted: list[dict[str, Any]] = []
+    for index, obj in enumerate(others):
+        stamp = parse_timestamp(obj["LastModified"])
+        fresh = floor is not None and stamp is not None and stamp >= floor
+        if index < keep_count or fresh:
+            retained.append(obj)
+        else:
+            deleted.append(obj)
+    pinned_bytes = sum(obj["Size"] for obj in pinned)
+    kept = list(pinned)
+    used = pinned_bytes
+    # The cap is the backstop: anything it evicts was inside the count/age
+    # policy, so name it rather than letting the retention rule look honoured.
+    capped: list[str] = []
+    for obj in retained:
+        size = obj["Size"]
+        if used + size <= max_bytes:
+            kept.append(obj)
+            used += size
+        else:
+            deleted.append(obj)
+            capped.append(obj["Key"])
+    deleted.sort(key=lambda o: (o["LastModified"], o["Key"]), reverse=True)
+    return {
+        "keep_keys": [o["Key"] for o in kept],
+        "delete_keys": [o["Key"] for o in deleted],
+        "keep_bytes": used,
+        "pinned_bytes": pinned_bytes,
+        "delete_bytes": sum(o["Size"] for o in deleted),
+        "capped_keys": capped,
+        "over_budget": pinned_bytes > max_bytes,
     }
 
 
@@ -232,10 +342,13 @@ def self_test_sigv4() -> None:
     signature = auth.rsplit("Signature=", 1)[1]
     if signature != _AWS_GET_RANGE_SIGNATURE:
         die(f"SigV4 self-test failed: got {signature}")
+    uploads = canonical_query({"uploads": "", "max-uploads": "1000", "prefix": "dl/"})
+    if uploads != LIST_UPLOADS_CANONICAL_QUERY:
+        die(f"ListMultipartUploads canonical query failed: {uploads}")
 
 
 class R2Client:
-    def __init__(self, *, default_bucket: str = "") -> None:
+    def __init__(self, *, default_bucket: str = "", require_bucket: bool = True) -> None:
         self.account_id = env("R2_ACCOUNT_ID") or DEFAULT_ACCOUNT_ID
         self.access_key = env("R2_ACCESS_KEY_ID")
         self.secret = env("R2_SECRET_ACCESS_KEY")
@@ -254,7 +367,7 @@ class R2Client:
             self.host = f"{self.account_id}.r2.cloudflarestorage.com"
         if not self.access_key or not self.secret:
             die("R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are unset")
-        if not self.bucket:
+        if require_bucket and not self.bucket:
             die("R2_BUCKET is unset")
         self._conn: http.client.HTTPSConnection | None = None
 
@@ -275,7 +388,9 @@ class R2Client:
             self._conn.timeout = timeout
         return self._conn
 
-    def _path(self, key: str | None) -> tuple[str, str]:
+    def _path(self, key: str | None, *, root: bool = False) -> tuple[str, str]:
+        if root:
+            return "/", "/"
         if key:
             canonical_uri = f"/{uri_encode(self.bucket, slash=True)}/{uri_encode(key, slash=True)}"
         else:
@@ -292,11 +407,12 @@ class R2Client:
         body: Any = None,
         payload_hash: str,
         timeout: int = 1800,
+        root: bool = False,
     ) -> tuple[int, bytes, dict[str, str]]:
         now = utc_now()
         amz_date = now.strftime("%Y%m%dT%H%M%SZ")
         datestamp = now.strftime("%Y%m%d")
-        canonical_uri, path = self._path(key)
+        canonical_uri, path = self._path(key, root=root)
         headers = {
             "host": self.host,
             "x-amz-date": amz_date,
@@ -351,7 +467,11 @@ class R2Client:
         content_disposition: str = "",
         metadata: dict[str, str] | None = None,
         sha256: str = "",
+        content_encoding: str = "",
     ) -> None:
+        """PUT `path` under `key`. `sha256` and `content_encoding` describe the
+        bytes actually sent: a pre-compressed file is uploaded as-is with
+        `Content-Encoding: br` and R2 serves the header verbatim."""
         size = os.path.getsize(path)
         if size > MAX_SINGLE_PUT:
             die(f"{path} is {size} bytes; single PutObject max is {MAX_SINGLE_PUT}")
@@ -361,6 +481,8 @@ class R2Client:
             "content-length": str(size),
             "cache-control": cache_control,
         }
+        if content_encoding:
+            extra["content-encoding"] = content_encoding
         if content_disposition:
             extra["content-disposition"] = content_disposition
         if metadata:
@@ -444,7 +566,156 @@ class R2Client:
             (headers.get("cache-control") or "").strip(),
         )
 
-    def list_prefix(self, prefix: str, *, as_directory: bool = True) -> list[dict[str, Any]]:
+    def list_buckets(self) -> list[dict[str, str]]:
+        """Every bucket the credentials can see. Raises R2AccessDenied for a
+        bucket-scoped token, which is the normal case for this repo's keys."""
+        status, body, _headers = self.request(
+            "GET",
+            None,
+            payload_hash=EMPTY_SHA256,
+            timeout=120,
+            root=True,
+        )
+        if status in DENIED_STATUS:
+            raise R2AccessDenied(f"ListBuckets HTTP {status}")
+        if status != 200:
+            die(f"ListBuckets HTTP {status}: {body[:500]!r}")
+        buckets: list[dict[str, str]] = []
+        for node in ET.fromstring(body).iter():
+            if localname(node.tag) != "Bucket":
+                continue
+            row = {"Name": "", "CreationDate": ""}
+            for field in node:
+                name = localname(field.tag)
+                if name in row:
+                    row[name] = field.text or ""
+            if row["Name"]:
+                buckets.append(row)
+        return buckets
+
+    def list_multipart_uploads(self, prefix: str = "") -> list[dict[str, Any]]:
+        """Incomplete multipart uploads. ListObjectsV2 never shows their parts,
+        but R2 bills them, so an account report has to ask separately."""
+        uploads: list[dict[str, Any]] = []
+        key_marker = ""
+        upload_marker = ""
+        while True:
+            query = {"uploads": "", "max-uploads": "1000"}
+            if prefix:
+                query["prefix"] = prefix
+            if key_marker:
+                query["key-marker"] = key_marker
+            if upload_marker:
+                query["upload-id-marker"] = upload_marker
+            status, body, _headers = self.request(
+                "GET",
+                None,
+                query=query,
+                payload_hash=EMPTY_SHA256,
+                timeout=120,
+            )
+            if status in DENIED_STATUS:
+                raise R2AccessDenied(f"ListMultipartUploads HTTP {status}")
+            if status != 200:
+                die(f"ListMultipartUploads HTTP {status}: {body[:500]!r}")
+            root = ET.fromstring(body)
+            truncated = ""
+            next_key = ""
+            next_upload = ""
+            for child in root:
+                name = localname(child.tag)
+                if name == "Upload":
+                    row: dict[str, Any] = {"Key": "", "UploadId": "", "Initiated": ""}
+                    for field in child:
+                        field_name = localname(field.tag)
+                        if field_name in row:
+                            row[field_name] = field.text or ""
+                    if row["Key"] and row["UploadId"]:
+                        uploads.append(row)
+                elif name == "IsTruncated":
+                    truncated = (child.text or "").lower()
+                elif name == "NextKeyMarker":
+                    next_key = child.text or ""
+                elif name == "NextUploadIdMarker":
+                    next_upload = child.text or ""
+            if truncated == "true" and (next_key or next_upload):
+                key_marker = next_key
+                upload_marker = next_upload
+                continue
+            break
+        return uploads
+
+    def list_parts(self, key: str, upload_id: str) -> list[dict[str, Any]]:
+        """The uploaded parts of one incomplete upload; their sizes are the
+        billed bytes of that upload."""
+        parts: list[dict[str, Any]] = []
+        marker = ""
+        while True:
+            query = {"uploadId": upload_id, "max-parts": "1000"}
+            if marker:
+                query["part-number-marker"] = marker
+            status, body, _headers = self.request(
+                "GET",
+                key,
+                query=query,
+                payload_hash=EMPTY_SHA256,
+                timeout=120,
+            )
+            if status in DENIED_STATUS:
+                raise R2AccessDenied(f"ListParts HTTP {status}")
+            if status == 404:
+                return parts
+            if status != 200:
+                die(f"ListParts {key} HTTP {status}: {body[:500]!r}")
+            root = ET.fromstring(body)
+            truncated = ""
+            next_marker = ""
+            for child in root:
+                name = localname(child.tag)
+                if name == "Part":
+                    part = {"PartNumber": 0, "Size": 0}
+                    for field in child:
+                        field_name = localname(field.tag)
+                        if field_name in part:
+                            part[field_name] = int(field.text or "0")
+                    parts.append(part)
+                elif name == "IsTruncated":
+                    truncated = (child.text or "").lower()
+                elif name == "NextPartNumberMarker":
+                    next_marker = child.text or ""
+            if truncated == "true" and next_marker:
+                marker = next_marker
+                continue
+            break
+        return parts
+
+    def abort_multipart_upload(self, key: str, upload_id: str) -> None:
+        status, body, _headers = self.request(
+            "DELETE",
+            key,
+            query={"uploadId": upload_id},
+            payload_hash=EMPTY_SHA256,
+            timeout=120,
+        )
+        if status not in (200, 204, 404):
+            die(f"AbortMultipartUpload {key} HTTP {status}: {body[:500]!r}")
+        log(f"aborted multipart s3://{self.bucket}/{key} ({upload_id})")
+
+    def usage(self, prefix: str = "") -> dict[str, Any]:
+        """Object count and stored bytes under `prefix` (empty = whole bucket)."""
+        objects = self.list_prefix(prefix, as_directory=False, raise_forbidden=True)
+        return {
+            "objects": len(objects),
+            "bytes": sum(int(obj["Size"] or 0) for obj in objects),
+        }
+
+    def list_prefix(
+        self,
+        prefix: str,
+        *,
+        as_directory: bool = True,
+        raise_forbidden: bool = False,
+    ) -> list[dict[str, Any]]:
         objects: list[dict[str, Any]] = []
         token = ""
         listed = prefix
@@ -461,6 +732,8 @@ class R2Client:
                 payload_hash=EMPTY_SHA256,
                 timeout=120,
             )
+            if raise_forbidden and status in DENIED_STATUS:
+                raise R2AccessDenied(f"ListObjectsV2 HTTP {status}")
             if status != 200:
                 die(f"ListObjectsV2 HTTP {status}: {body[:500]!r}")
             root = ET.fromstring(body)
