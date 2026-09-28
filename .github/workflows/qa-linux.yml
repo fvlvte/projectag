@@ -236,6 +236,8 @@ jobs:
         run: cargo check --features game
       - name: cargo check --features game,actors
         run: cargo check --features game,actors
+      - name: cargo check --features lua --bin tikdong
+        run: cargo check --features lua --bin tikdong
       - name: cargo check (wasm32 web client)
         # The browser client has its own Bevy feature table and dependency
         # set (Cargo.toml wasm32 target); the native checks prove nothing
