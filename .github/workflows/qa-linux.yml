@@ -55,6 +55,8 @@ jobs:
           filters: |
             rust:
               - 'src/**'
+              - 'crates/moonlight/**'
+              - 'examples/moonlight-counter/**'
               - 'backend/**'
               - 'tools/**'
               - 'vendor/**'
@@ -73,6 +75,7 @@ jobs:
               - '.github/workflows/qa-linux.yml'
             client:
               - 'src/**'
+              - 'crates/moonlight/**'
               - 'backend/**'
               - 'assets/**'
               - 'qa/**'
@@ -240,16 +243,26 @@ jobs:
         run: |
           rustup target add wasm32-unknown-unknown
           cargo check --target wasm32-unknown-unknown --features game,web-webgl2 --bin engine
+      - name: Moonlight unit tests
+        run: cargo test -p moonlight --lib
+      - name: Moonlight unit tests (local development features)
+        run: cargo test -p moonlight --features local-sim --lib
+      - name: Independent Moonlight host
+        run: CARGO_TARGET_DIR=target cargo test --locked --manifest-path examples/moonlight-counter/Cargo.toml
+      - name: Engine and launcher package boundaries
+        run: |
+          cargo fetch --locked --target x86_64-unknown-linux-gnu
+          cargo test --locked --manifest-path tools/agx/Cargo.toml --features engine-checks --test engine_packages
       - name: Unit tests (shipped feature set)
         # Every `#[cfg(test)]` module in the crate, not only `schedule_tests`:
         # the filter hid a mail_ui test that panicked on the blank world for
         # the same reason the `qa fixtures` build did (2026-09-16).
-        run: cargo test --features game --lib
+        run: cargo test -p tikdong --features game,engine-test-support --lib
       - name: Unit tests (editor, actors, authored worlds)
         # Tests that read the authored Shores/Emberfall worlds are gated on
         # `local-sim` (dev/QA simulation, never a shipped set); this variant
         # is the only place they run.
-        run: cargo test --features game,projectag-editor,actors,local-sim --lib
+        run: cargo test -p tikdong --features game,projectag-editor,actors,local-sim,engine-test-support --lib
       - name: Shared-core authority tests
         run: cargo test --manifest-path backend/Cargo.toml -p projectag-core --features authority
 
