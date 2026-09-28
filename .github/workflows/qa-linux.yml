@@ -109,16 +109,36 @@ jobs:
           node-version: "22"
       - name: Documentation check
         run: python3 scripts/check-docs.py
+      - name: Engine workflow pilot contracts
+        run: |
+          python3 scripts/test_check_doc_impact.py
+          python3 scripts/test_project_intake.py
       - name: Repository bloat check
         if: ${{ github.event_name == 'pull_request' }}
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           FETCH_TOKEN: ${{ github.token }}
         run: |
           # checkout runs with persist-credentials: false, so the base commit
-          # is fetched with the job token explicitly; only the tree diff is needed.
-          git fetch --depth=1 "https://x-access-token:${FETCH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BASE_SHA"
+          # and exact author head are fetched explicitly. HEAD is GitHub's
+          # synthetic merge checkout, not the revision reviewed by doc-impact.
+          git fetch --depth=1 "https://x-access-token:${FETCH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BASE_SHA" "$HEAD_SHA"
           python3 scripts/check-bloat.py --base "$BASE_SHA" --no-merge-base
+      - name: Documentation impact pilot (advisory)
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/check-doc-impact.py --base "$BASE_SHA" --head "$HEAD_SHA" --json > "$RUNNER_TEMP/doc-impact.json"
+      - name: Upload documentation impact report
+        if: ${{ always() && github.event_name == 'pull_request' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation-impact
+          path: ${{ runner.temp }}/doc-impact.json
+          if-no-files-found: warn
+          retention-days: 14
       - name: Standalone ZIP encryption regression
         run: |
           python3 -m venv "$RUNNER_TEMP/zip-crypto"
