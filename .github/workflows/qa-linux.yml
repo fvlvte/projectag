@@ -57,6 +57,7 @@ jobs:
               - 'src/**'
               - 'crates/moonlight/**'
               - 'examples/moonlight-counter/**'
+              - 'examples/harmony-games/**'
               - 'backend/**'
               - 'tools/**'
               - 'vendor/**'
@@ -164,6 +165,9 @@ jobs:
           python3 scripts/test_paperclip_human_qa.py
           python3 scripts/test_paperclip_issue.py
           python3 scripts/test_rebase_open_prs.py
+          python3 scripts/test_harmony_worker.py
+          python3 scripts/test_harmony_publish.py
+          python3 tests/test_harmony_examples.py
           python3 scripts/test_import_character_creator_kit.py
           python3 scripts/test-character-creator-assets.py
           python3 backend/scripts/test-qa-hosted-client.py
@@ -249,6 +253,12 @@ jobs:
         run: cargo test -p moonlight --lib --features websocket,test-support
       - name: Independent Moonlight host
         run: CARGO_TARGET_DIR=target cargo test --locked --manifest-path examples/moonlight-counter/Cargo.toml
+      - name: Harmony example rules and application components
+        env:
+          CARGO_TARGET_DIR: target
+        run: |
+          cargo test --locked --manifest-path examples/harmony-games/Cargo.toml --no-default-features --lib
+          cargo test --locked --manifest-path examples/harmony-games/Cargo.toml --bin harmony-games
       - name: Independent Moonlight browser checks
         # Resolve the standalone host separately so product features cannot
         # supply missing browser bindings. Reuse the core job's target cache.
@@ -257,6 +267,8 @@ jobs:
         run: |
           cargo check --locked --manifest-path examples/moonlight-counter/Cargo.toml --target wasm32-unknown-unknown --features moonlight/web-webgl2 --bin moonlight-counter
           cargo check --locked --manifest-path examples/moonlight-counter/Cargo.toml --target wasm32-unknown-unknown --features moonlight/web-webgpu --bin moonlight-counter
+          cargo check --locked --manifest-path examples/harmony-games/Cargo.toml --target wasm32-unknown-unknown --features web-webgl2 --bin harmony-games
+          cargo check --locked --manifest-path examples/harmony-games/Cargo.toml --target wasm32-unknown-unknown --features web-webgpu --bin harmony-games
       - name: Engine and launcher package boundaries
         run: |
           cargo fetch --locked --target x86_64-unknown-linux-gnu
@@ -313,6 +325,8 @@ jobs:
           prefix-key: qa-linux-backend
       - name: Harness tools present
         run: command -v initdb pg_ctl createdb psql
+      - name: Harmony product boundary
+        run: cargo test --locked --manifest-path backend/Cargo.toml -p harmony -p harmony-web
       - name: Exchange harness (bank, mail, trade receipts)
         run: cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa backend exchange --output "$RUNNER_TEMP/qa-backend/exchange"
       - name: Environment harness (service, shards, live socket)
