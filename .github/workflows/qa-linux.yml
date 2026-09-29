@@ -299,6 +299,13 @@ jobs:
       - name: Backend product dependency and routing boundaries
         run: |
           python3 backend/scripts/check-product-boundaries.py
+          cargo check --locked --manifest-path backend/Cargo.toml --no-default-features \
+            --features auth-service/actors,api-gateway/actors,config-service/actors \
+            -p api-gateway -p auth-service -p wallet-service -p store-service \
+            -p config-service -p live-ingest-service -p chess-service -p migrator
+          cargo check --locked --manifest-path backend/Cargo.toml --no-default-features \
+            --features auth-service/projectag,auth-service/harmony,api-gateway/projectag,projectag-service/xworker \
+            -p api-gateway -p auth-service -p config-service -p projectag-service -p projectag-shard -p migrator
           cargo test --manifest-path backend/Cargo.toml -p api-gateway -p auth-service --no-default-features --features api-gateway/actors,auth-service/actors composition_tests
           cargo test --manifest-path backend/Cargo.toml -p api-gateway -p auth-service --no-default-features --features api-gateway/projectag,auth-service/projectag composition_tests
           cargo test --manifest-path backend/Cargo.toml -p config-service --no-default-features
