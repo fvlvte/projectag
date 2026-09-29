@@ -55,7 +55,7 @@ jobs:
           filters: |
             rust:
               - 'src/**'
-              - 'crates/moonlight/**'
+              - 'crates/**'
               - 'examples/moonlight-counter/**'
               - 'examples/harmony-games/**'
               - 'backend/**'
@@ -70,13 +70,14 @@ jobs:
               - '.github/workflows/qa-linux.yml'
             backend:
               - 'backend/**'
+              - 'crates/actors-core/**'
               - 'VERSION'
               - 'BUILD'
               - 'Cargo.lock'
               - '.github/workflows/qa-linux.yml'
             client:
               - 'src/**'
-              - 'crates/moonlight/**'
+              - 'crates/**'
               - 'backend/**'
               - 'assets/**'
               - 'qa/**'
@@ -170,6 +171,7 @@ jobs:
           python3 tests/test_harmony_examples.py
           python3 scripts/test_import_character_creator_kit.py
           python3 scripts/test-character-creator-assets.py
+          python3 backend/scripts/test-environment-harness.py
           python3 backend/scripts/test-qa-hosted-client.py
       - name: Public PR title and body scan
         if: ${{ github.event_name == 'pull_request' }}
@@ -242,6 +244,13 @@ jobs:
         run: cargo check --features game,actors
       - name: cargo check --features lua --bin tikdong
         run: cargo check --features lua --bin tikdong
+      - name: Independent product clients
+        run: |
+          cargo check -p projectag-client --bin projectag
+          cargo check -p actors-client --bin actors
+          cargo check -p client-services --no-default-features
+          cargo check -p tikdong --features gm-playtest-helper --bin playtest-helper
+          cargo check -p projectag-client --features gm-playtest-helper --bin playtest-helper
       - name: cargo check (wasm32 web client)
         # The browser client has its own Bevy feature table and dependency
         # set (Cargo.toml wasm32 target); the native checks prove nothing
@@ -249,6 +258,8 @@ jobs:
         run: |
           rustup target add wasm32-unknown-unknown
           cargo check --target wasm32-unknown-unknown --features game,web-webgl2 --bin engine
+          cargo check -p projectag-client --target wasm32-unknown-unknown --features web-webgl2 --bin projectag
+          cargo check -p actors-client --target wasm32-unknown-unknown --features web-webgl2 --bin actors
       - name: Moonlight unit and native socket tests
         run: cargo test -p moonlight --lib --features websocket,test-support
       - name: Independent Moonlight host
@@ -277,12 +288,38 @@ jobs:
         # Every `#[cfg(test)]` module in the crate, not only `schedule_tests`:
         # the filter hid a mail_ui test that panicked on the blank world for
         # the same reason the `qa fixtures` build did (2026-09-16).
-        run: cargo test -p tikdong --features game,engine-test-support --lib
+        run: |
+          cargo test -p projectag-client --features engine-test-support --lib -- --test-threads=1
+          cargo test -p client-services --features ui,test-support --lib
+          cargo test -p actors-core --features live,lua
+          cargo test -p projectag-updater --lib
       - name: Unit tests (editor, actors, authored worlds)
         # Tests that read the authored Shores/Emberfall worlds are gated on
         # `local-sim` (dev/QA simulation, never a shipped set); this variant
         # is the only place they run.
-        run: cargo test -p tikdong --features game,projectag-editor,actors,local-sim,engine-test-support --lib
+        run: |
+          # Client test worlds share the process-wide origin used by editor fixtures.
+          cargo test -p projectag-client --features projectag-editor,local-sim,engine-test-support --lib -- --test-threads=1
+          cargo test -p actors-client --features engine-test-support --lib
+      - name: Backend product dependency and routing boundaries
+        run: |
+          python3 backend/scripts/check-product-boundaries.py
+          cargo check --locked --manifest-path backend/Cargo.toml --no-default-features \
+            --features auth-service/actors,api-gateway/actors,config-service/actors \
+            -p api-gateway -p auth-service -p wallet-service -p store-service \
+            -p config-service -p live-ingest-service -p chess-service -p migrator
+          cargo check --locked --manifest-path backend/Cargo.toml --no-default-features \
+            --features auth-service/projectag,auth-service/harmony,api-gateway/projectag,projectag-service/xworker \
+            -p api-gateway -p auth-service -p config-service -p projectag-service -p projectag-shard -p migrator
+          cargo test --manifest-path backend/Cargo.toml -p api-gateway -p auth-service --no-default-features --features api-gateway/actors,auth-service/actors composition_tests
+          cargo test --manifest-path backend/Cargo.toml -p api-gateway -p auth-service --no-default-features --features api-gateway/projectag,auth-service/projectag composition_tests
+          cargo test --manifest-path backend/Cargo.toml -p config-service --no-default-features
+          cargo test --manifest-path backend/Cargo.toml -p config-service --no-default-features --features actors
+      - name: Shared backend infrastructure
+        run: |
+          cargo test --manifest-path backend/Cargo.toml -p actors360-common --features projectag-web
+          cargo test --manifest-path backend/Cargo.toml -p runtime-diagnostics --features diagnostics-system
+          cargo test --manifest-path backend/Cargo.toml -p identity-policy --features server-reservations
       - name: Shared-core authority tests
         run: cargo test --manifest-path backend/Cargo.toml -p projectag-core --features authority
 
@@ -473,6 +510,7 @@ jobs:
             -p projectag-request-signing --bin sign-fixture-request
       - name: Client harness scenarios
         run: |
+          set -euo pipefail
           cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --json \
             --output "$RUNNER_TEMP/qa-client" \
             harness.selftest.click-roundtrip windows.bag.open-close windows.spellbook-icon chat.input.focus-type windows.creator-female-appearance windows.creator-female-compact windows.creator-female-short windows.creator-female-customization windows.creator-body-switch windows.creator-color-input windows.patchnotes-desktop windows.patchnotes-compact windows.patchnotes-short recovery.update-handoff-desktop recovery.update-handoff-compact recovery.update-handoff-short recovery.maintenance-notice-desktop recovery.maintenance-notice-compact recovery.maintenance-notice-short movement.creator-female-walk movement.hosted-animation-manifest \
