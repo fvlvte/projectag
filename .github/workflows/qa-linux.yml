@@ -326,7 +326,7 @@ jobs:
       - name: Harness tools present
         run: command -v initdb pg_ctl createdb psql
       - name: Harmony product boundary
-        run: cargo test --locked --manifest-path backend/Cargo.toml -p harmony
+        run: cargo test --locked --manifest-path backend/Cargo.toml -p harmony -p harmony-web
       - name: Exchange harness (bank, mail, trade receipts)
         run: cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa backend exchange --output "$RUNNER_TEMP/qa-backend/exchange"
       - name: Environment harness (service, shards, live socket)
