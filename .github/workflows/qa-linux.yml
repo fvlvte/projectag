@@ -248,6 +248,8 @@ jobs:
           cargo check -p projectag-client --bin projectag
           cargo check -p actors-client --bin actors
           cargo check -p client-services --no-default-features
+          cargo check -p tikdong --features gm-playtest-helper --bin playtest-helper
+          cargo check -p projectag-client --features gm-playtest-helper --bin playtest-helper
       - name: cargo check (wasm32 web client)
         # The browser client has its own Bevy feature table and dependency
         # set (Cargo.toml wasm32 target); the native checks prove nothing
@@ -255,6 +257,7 @@ jobs:
         run: |
           rustup target add wasm32-unknown-unknown
           cargo check --target wasm32-unknown-unknown --features game,web-webgl2 --bin engine
+          cargo check -p projectag-client --target wasm32-unknown-unknown --features web-webgl2 --bin projectag
           cargo check -p actors-client --target wasm32-unknown-unknown --features web-webgl2 --bin actors
       - name: Moonlight unit and native socket tests
         run: cargo test -p moonlight --lib --features websocket,test-support
@@ -285,7 +288,7 @@ jobs:
         # the filter hid a mail_ui test that panicked on the blank world for
         # the same reason the `qa fixtures` build did (2026-09-16).
         run: |
-          cargo test -p projectag-client --features engine-test-support --lib
+          cargo test -p projectag-client --features engine-test-support --lib -- --test-threads=1
           cargo test -p client-services --features ui,test-support --lib
           cargo test -p actors-core --features live,lua
           cargo test -p projectag-updater --lib
@@ -294,7 +297,8 @@ jobs:
         # `local-sim` (dev/QA simulation, never a shipped set); this variant
         # is the only place they run.
         run: |
-          cargo test -p projectag-client --features projectag-editor,local-sim,engine-test-support --lib
+          # Client test worlds share the process-wide origin used by editor fixtures.
+          cargo test -p projectag-client --features projectag-editor,local-sim,engine-test-support --lib -- --test-threads=1
           cargo test -p actors-client --features engine-test-support --lib
       - name: Backend product dependency and routing boundaries
         run: |
