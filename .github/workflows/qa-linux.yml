@@ -245,8 +245,8 @@ jobs:
         run: |
           rustup target add wasm32-unknown-unknown
           cargo check --target wasm32-unknown-unknown --features game,web-webgl2 --bin engine
-      - name: Moonlight unit tests
-        run: cargo test -p moonlight --lib
+      - name: Moonlight unit and native socket tests
+        run: cargo test -p moonlight --lib --features websocket,test-support
       - name: Independent Moonlight host
         run: CARGO_TARGET_DIR=target cargo test --locked --manifest-path examples/moonlight-counter/Cargo.toml
       - name: Independent Moonlight browser checks
