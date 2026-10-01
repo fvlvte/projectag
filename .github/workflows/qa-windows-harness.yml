@@ -27,10 +27,13 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: "0"
+      # A rustc warning from a first-party package fails the cross build; fix
+      # the cause instead of suppressing the lint.
+      CARGO_BUILD_WARNINGS: deny
       GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -59,8 +62,9 @@ jobs:
         run: bash .github/scripts/git-crypt-unlock.sh
 
       - name: Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.98.1"
           targets: x86_64-pc-windows-msvc
 
       - name: Cache cargo and xwin
@@ -70,9 +74,11 @@ jobs:
           workspaces: ". -> target"
           cache-targets: true
           prefix-key: qa-windows-harness
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Cache xwin SDK and cargo-xwin
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.xwin
@@ -99,7 +105,7 @@ jobs:
           )
 
       - name: Upload private QA pack
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: projectag-qa-windows-pack
           path: ${{ runner.temp }}/projectag-qa-windows.zip
@@ -113,7 +119,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Download private QA pack
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: projectag-qa-windows-pack
           path: ${{ runner.temp }}/qa-download
@@ -140,7 +146,9 @@ jobs:
           Copy-Item dxc/bin/x64/dxil.dll $pack
 
       - name: Rust compiler for disposable updater fixtures
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
 
       - name: Windows updater process and HTTP integration
         shell: pwsh
@@ -174,7 +182,7 @@ jobs:
 
       - name: Upload QA evidence
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: projectag-qa-windows-evidence
           path: |
@@ -204,7 +212,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout report helpers
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
           sparse-checkout: .github/scripts
@@ -212,7 +220,7 @@ jobs:
       - name: Download QA evidence
         # Missing when build-qa-pack or run-qa failed before uploading.
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: projectag-qa-windows-evidence
           path: qa-evidence

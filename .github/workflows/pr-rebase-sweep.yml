@@ -31,7 +31,7 @@ jobs:
         # persist-credentials stays at its default (true), unlike every other
         # workflow here: this job's whole job is pushing rebased branches, so
         # it needs the checkout's stored GITHUB_TOKEN credential helper.
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 

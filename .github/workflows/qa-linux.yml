@@ -32,6 +32,11 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   CARGO_NET_RETRY: "3"
+  # Any rustc warning from a first-party (path) package fails its cargo
+  # command, including warnings replayed from a cached build. Fix the cause
+  # instead of suppressing the lint. Unlike RUSTFLAGS, this does not
+  # invalidate the build cache or replace the wasm getrandom cfg.
+  CARGO_BUILD_WARNINGS: deny
 
 jobs:
   changes:
@@ -44,11 +49,11 @@ jobs:
       backend: ${{ steps.filter.outputs.backend }}
       client: ${{ steps.filter.outputs.client }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
           persist-credentials: false
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@v4
         if: ${{ github.event_name == 'pull_request' }}
         id: filter
         with:
@@ -61,9 +66,17 @@ jobs:
               - 'backend/**'
               - 'tools/**'
               - 'vendor/**'
+              - 'mobile/**'
+              # Compile-time embeds (characters, cinematics, fonts, and the
+              # content projectag-core's build.rs bakes in) and the authored
+              # worlds the local-sim unit tests read.
+              - 'assets/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'build.rs'
+              - 'build_support.rs'
+              - '.cargo/**'
+              - 'rust-toolchain.toml'
               - 'VERSION'
               - 'BUILD'
               - 'STORE_BUILD'
@@ -71,6 +84,16 @@ jobs:
             backend:
               - 'backend/**'
               - 'crates/actors-core/**'
+              # projectag-core's build.rs embeds the authored content.
+              - 'assets/content/**'
+              # The job drives agx's backend harnesses and catalogued scenarios.
+              - 'tools/agx/**'
+              - 'qa/**'
+              # auth-service's Harmony suite drives the real worker script.
+              - 'scripts/harmony*.py'
+              - 'scripts/test_harmony*.py'
+              - '.cargo/**'
+              - 'rust-toolchain.toml'
               - 'VERSION'
               - 'BUILD'
               - 'Cargo.lock'
@@ -82,9 +105,14 @@ jobs:
               - 'assets/**'
               - 'qa/**'
               - 'tools/agx/**'
+              - 'vendor/**'
+              - 'mobile/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'build.rs'
+              - 'build_support.rs'
+              - '.cargo/**'
+              - 'rust-toolchain.toml'
               - 'VERSION'
               - 'BUILD'
               - 'STORE_BUILD'
@@ -97,7 +125,7 @@ jobs:
     env:
       GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -106,12 +134,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git-crypt pkg-config libssl-dev nano
       - name: Unlock git-crypt
+        id: unlock
         run: |
           test -n "${GITCRYPT_KEY_B64}" || { echo "Add repository secret GITCRYPT_KEY_B64"; exit 1; }
           bash .github/scripts/git-crypt-unlock.sh
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
+      - uses: dtolnay/rust-toolchain@master
+        id: rust
+        with:
+          toolchain: "1.98.1"
+          components: rustfmt
       - name: Documentation check
         run: python3 scripts/check-docs.py
       - name: Engine workflow pilot contracts
@@ -138,7 +172,7 @@ jobs:
         run: python3 scripts/check-doc-impact.py --base "$BASE_SHA" --head "$HEAD_SHA" --json > "$RUNNER_TEMP/doc-impact.json"
       - name: Upload documentation impact report
         if: ${{ always() && github.event_name == 'pull_request' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: documentation-impact
           path: ${{ runner.temp }}/doc-impact.json
@@ -156,6 +190,7 @@ jobs:
       - name: Python script tests
         run: |
           python3 scripts/test_check_docs.py
+          python3 scripts/test_check_suppressions.py
           python3 scripts/test_count_loc.py
           python3 scripts/test_check_bloat.py
           python3 scripts/test_repo_trackers.py
@@ -179,7 +214,6 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: python3 .github/scripts/check-public-messages.py
-      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         continue-on-error: true
         with:
@@ -187,6 +221,8 @@ jobs:
             tools/agx -> target
             backend -> target
           prefix-key: qa-linux-static
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: QA catalogue validation
         run: cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa validate
       - name: Tool assertion and deployment contracts
@@ -195,7 +231,7 @@ jobs:
         run: python3 tools/agx/tests/patchnotes_terminal.py --agx tools/agx/target/debug/agx --report "$RUNNER_TEMP/patchnotes-terminal.json"
       - name: Upload patch-note terminal evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: patchnotes-terminal-evidence
           path: ${{ runner.temp }}/patchnotes-terminal.*
@@ -203,6 +239,36 @@ jobs:
           retention-days: 14
       - name: Content check
         run: cargo run --quiet --manifest-path backend/Cargo.toml -p projectag-core --bin content-check
+      # The suppression and formatting gates run last and even after an
+      # earlier check failed, so one push reports every static result instead
+      # of stopping at the first style slip. They still fail the job.
+      - name: Lint suppression ratchet
+        # On pull requests the base commit bounds the baseline, so a change
+        # cannot raise its own allowance in the same diff. The bloat step
+        # fetches it, but it is skipped when an earlier check failed.
+        if: ${{ !cancelled() && steps.unlock.outcome == 'success' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          FETCH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "$BASE_SHA" ]; then
+            git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null \
+              || git fetch --depth=1 "https://x-access-token:${FETCH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BASE_SHA"
+            python3 scripts/check-suppressions.py --base "$BASE_SHA"
+          else
+            python3 scripts/check-suppressions.py
+          fi
+      - name: Rust formatting (every workspace and standalone package)
+        # `cargo fmt` from a workspace root covers all of its members; a
+        # virtual manifest is not found through --manifest-path, so enter each
+        # root. tests/projectag-qa-linux.test.mjs keeps this list complete.
+        if: ${{ !cancelled() && steps.rust.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          for root in . backend tools/agx tools/wgsl-check examples/moonlight-counter examples/harmony-games; do
+            echo "== cargo fmt --check ($root)"
+            (cd "$root" && cargo fmt --check)
+          done
 
   core:
     name: core (client check, schedules, authority)
@@ -213,7 +279,7 @@ jobs:
     env:
       GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -230,7 +296,10 @@ jobs:
         run: |
           test -n "${GITCRYPT_KEY_B64}" || { echo "Add repository secret GITCRYPT_KEY_B64"; exit 1; }
           bash .github/scripts/git-crypt-unlock.sh
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         continue-on-error: true
         with:
@@ -238,6 +307,8 @@ jobs:
             . -> target
             backend -> target
           prefix-key: qa-linux-core
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: cargo check --features game
         run: cargo check --features game
       - name: cargo check --features game,actors
@@ -261,7 +332,7 @@ jobs:
           cargo check -p projectag-client --target wasm32-unknown-unknown --features web-webgl2 --bin projectag
           cargo check -p actors-client --target wasm32-unknown-unknown --features web-webgl2 --bin actors
       - name: Moonlight unit and native socket tests
-        run: cargo test -p moonlight --lib --features websocket,test-support
+        run: cargo test -p moonlight --lib --features websocket,test-support,qa-harness
       - name: Independent Moonlight host
         run: CARGO_TARGET_DIR=target cargo test --locked --manifest-path examples/moonlight-counter/Cargo.toml
       - name: Harmony example rules and application components
@@ -302,6 +373,10 @@ jobs:
           cargo test -p projectag-client --features projectag-editor,local-sim,engine-test-support --lib -- --test-threads=1
           cargo test -p actors-client --features engine-test-support --lib
       - name: Backend product dependency and routing boundaries
+        # The compile check omits the hosted-admission feature: Actions swaps
+        # its native crate for an empty stub (scripts/vendor-pack.py), so it
+        # cannot compile here. backend/Dockerfile builds it from the real
+        # sources, and the dependency-closure script still resolves it.
         run: |
           python3 backend/scripts/check-product-boundaries.py
           cargo check --locked --manifest-path backend/Cargo.toml --no-default-features \
@@ -309,7 +384,7 @@ jobs:
             -p api-gateway -p auth-service -p wallet-service -p store-service \
             -p config-service -p live-ingest-service -p chess-service -p migrator
           cargo check --locked --manifest-path backend/Cargo.toml --no-default-features \
-            --features auth-service/projectag,auth-service/harmony,api-gateway/projectag,projectag-service/xworker \
+            --features auth-service/projectag,auth-service/harmony,api-gateway/projectag \
             -p api-gateway -p auth-service -p config-service -p projectag-service -p projectag-shard -p migrator
           cargo test --manifest-path backend/Cargo.toml -p api-gateway -p auth-service --no-default-features --features api-gateway/actors,auth-service/actors composition_tests
           cargo test --manifest-path backend/Cargo.toml -p api-gateway -p auth-service --no-default-features --features api-gateway/projectag,auth-service/projectag composition_tests
@@ -336,7 +411,7 @@ jobs:
       # harness converged locally and hit "connection refused" here).
       PROJECTAG_QA_CONVERGE_SEC: "90"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -352,7 +427,9 @@ jobs:
         run: |
           test -n "${GITCRYPT_KEY_B64}" || { echo "Add repository secret GITCRYPT_KEY_B64"; exit 1; }
           bash .github/scripts/git-crypt-unlock.sh
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
       - uses: Swatinem/rust-cache@v2
         continue-on-error: true
         with:
@@ -360,6 +437,8 @@ jobs:
             tools/agx -> target
             backend -> target
           prefix-key: qa-linux-backend
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Harness tools present
         run: command -v initdb pg_ctl createdb psql
       - name: Harmony product boundary
@@ -398,7 +477,7 @@ jobs:
           PY
       - name: Upload backend evidence
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: projectag-qa-backend-evidence
           path: ${{ runner.temp }}/qa-backend/**
@@ -425,7 +504,7 @@ jobs:
       LIBGL_ALWAYS_SOFTWARE: "1"
       PROJECTAG_QA_BACKGROUND: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -480,7 +559,9 @@ jobs:
         run: |
           test -n "${GITCRYPT_KEY_B64}" || { echo "Add repository secret GITCRYPT_KEY_B64"; exit 1; }
           bash .github/scripts/git-crypt-unlock.sh
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
       - uses: Swatinem/rust-cache@v2
         continue-on-error: true
         with:
@@ -489,6 +570,8 @@ jobs:
             tools/agx -> target
             backend -> target
           prefix-key: qa-linux-client
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Software Vulkan adapter present
         run: |
           test -n "${VK_ICD_FILENAMES:-}"
@@ -521,7 +604,7 @@ jobs:
         run: xvfb-run -a cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa fixtures --output "$RUNNER_TEMP/qa-fixtures"
       - name: Upload client evidence
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: projectag-qa-linux-evidence
           path: |
@@ -533,7 +616,7 @@ jobs:
           retention-days: 14
       - name: Upload fixture renders
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: projectag-qa-fixtures
           path: ${{ runner.temp }}/qa-fixtures/**
@@ -563,12 +646,12 @@ jobs:
       PAPERCLIP_NIGHTLY: ${{ github.event_name == 'schedule' && '1' || '' }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           sparse-checkout: .github/scripts
       - name: Download evidence
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: projectag-qa-*-evidence
           path: qa-evidence

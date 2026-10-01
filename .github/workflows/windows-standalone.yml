@@ -19,6 +19,9 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  # A rustc warning from a first-party package fails the cross build; fix the
+  # cause instead of suppressing the lint.
+  CARGO_BUILD_WARNINGS: deny
 
 jobs:
   windows-standalone:
@@ -30,7 +33,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
@@ -70,8 +73,9 @@ jobs:
           "$RUNNER_TEMP/zip-crypto/bin/python" scripts/test_standalone_zip_crypto.py
 
       - name: Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.98.1"
           targets: x86_64-pc-windows-msvc
 
       - name: Cache cargo and xwin
@@ -81,9 +85,11 @@ jobs:
           workspaces: "."
           cache-targets: true
           prefix-key: windows-standalone
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Cache xwin SDK and cargo-xwin
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.xwin
@@ -117,7 +123,7 @@ jobs:
           ls -lh dist/engine-windows-standalone.zip "dist/engine-windows-standalone-${SHORT}.zip"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: engine-windows-standalone
           path: ${{ steps.zip.outputs.zip }}
