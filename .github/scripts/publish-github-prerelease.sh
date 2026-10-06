@@ -10,7 +10,9 @@
 # Env: GH_TOKEN or GITHUB_TOKEN, GITHUB_SHA, STANDALONE_TAG,
 #      STANDALONE_SHORT, STANDALONE_ZIP, GITHUB_SERVER_URL, GITHUB_REPOSITORY,
 #      GITHUB_RUN_ID. Optional: GH_RELEASE_ATTEMPTS (default 4),
-#      GH_RELEASE_DELAY_SECS (default 5).
+#      GH_RELEASE_DELAY_SECS (default 5), GH_RELEASE_KEEP (per-commit
+#      prereleases kept, default 20), GH_RELEASE_PRUNE_MAX (deletions per run,
+#      default 50).
 set -euo pipefail
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -34,6 +36,10 @@ MAX_ATTEMPTS="${GH_RELEASE_ATTEMPTS:-4}"
 DELAY_SECS="${GH_RELEASE_DELAY_SECS:-5}"
 [[ "$MAX_ATTEMPTS" -ge 1 ]] || die "GH_RELEASE_ATTEMPTS must be >= 1"
 [[ "$DELAY_SECS" -ge 0 ]] || die "GH_RELEASE_DELAY_SECS must be >= 0"
+KEEP="${GH_RELEASE_KEEP:-20}"
+PRUNE_MAX="${GH_RELEASE_PRUNE_MAX:-50}"
+[[ "$KEEP" =~ ^[0-9]+$ && "$KEEP" -ge 1 ]] || die "GH_RELEASE_KEEP must be a positive integer"
+[[ "$PRUNE_MAX" =~ ^[0-9]+$ ]] || die "GH_RELEASE_PRUNE_MAX must be a non-negative integer"
 
 is_retryable() {
   local log="$1"
@@ -106,3 +112,25 @@ run_gh release create standalone-windows \
   --target "$GITHUB_SHA" \
   "$ROLLING_ZIP" \
   "$ZIP"
+
+# Bounded retention: every push adds a ~180 MB per-commit prerelease, so keep
+# only the GH_RELEASE_KEEP newest `standalone-windows-<sha12>` ones (never the
+# rolling `standalone-windows` or this run's tag), deleting at most
+# GH_RELEASE_PRUNE_MAX per run. Best effort like the rest of this backup: a
+# listing or delete failure is reported and never fails the job.
+prune_prereleases() {
+  local listed tag
+  if ! listed="$(gh release list --limit 200 --json tagName,isPrerelease,createdAt \
+      --jq '.[] | select(.isPrerelease) | select(.tagName | test("^standalone-windows-[0-9a-f]{12}$")) | [.createdAt, .tagName] | @tsv' 2>/dev/null)"; then
+    echo "GitHub prerelease retention skipped: release list failed" >&2
+    return 0
+  fi
+  printf '%s\n' "$listed" | sort -r | awk -v keep="$KEEP" \
+    'NF == 2 && $2 ~ /^standalone-windows-[0-9a-f]+$/ && length($2) == 31 && ++n > keep { print $2 }' \
+    | head -n "$PRUNE_MAX" | while read -r tag; do
+      [[ -n "$tag" && "$tag" != "$TAG" ]] || continue
+      echo "deleting superseded prerelease ${tag} (keeping the ${KEEP} newest)"
+      gh release delete "$tag" --yes --cleanup-tag || echo "could not delete prerelease ${tag}" >&2
+    done || true
+}
+prune_prereleases

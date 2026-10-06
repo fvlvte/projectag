@@ -332,7 +332,11 @@ jobs:
           cargo check -p projectag-client --target wasm32-unknown-unknown --features web-webgl2 --bin projectag
           cargo check -p actors-client --target wasm32-unknown-unknown --features web-webgl2 --bin actors
       - name: Moonlight unit and native socket tests
-        run: cargo test -p moonlight --lib --features websocket,test-support,qa-harness
+        # Twice: the 2D build, then `3d`, the only build that compiles the gfx
+        # quality tables, mesh LOD, scene3d, resume and render-profile tests.
+        run: |
+          cargo test -p moonlight --lib --features websocket,test-support,qa-harness
+          cargo test -p moonlight --lib --features 3d,websocket,test-support,qa-harness
       - name: Independent Moonlight host
         run: CARGO_TARGET_DIR=target cargo test --locked --manifest-path examples/moonlight-counter/Cargo.toml
       - name: Harmony example rules and application components
