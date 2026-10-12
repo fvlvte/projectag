@@ -64,7 +64,7 @@ jobs:
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.98.1"
+          toolchain: "1.99.0"
           targets: x86_64-pc-windows-msvc
 
       - name: Cache cargo and xwin
@@ -148,7 +148,7 @@ jobs:
       - name: Rust compiler for disposable updater fixtures
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.98.1"
+          toolchain: "1.99.0"
 
       - name: Windows updater process and HTTP integration
         shell: pwsh
@@ -175,8 +175,8 @@ jobs:
           $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
           [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point([int]($screen.Width / 2), [int]($screen.Height / 2))
           Set-Location $pack
-          & (Join-Path $pack "agx.exe") qa run --pack . --output $results --driver harness --ready-timeout 240 --json `
-            harness.selftest.click-roundtrip windows.bag.open-close windows.spellbook-icon chat.input.focus-type windows.creator-female-appearance windows.creator-female-compact windows.creator-female-short windows.creator-female-customization windows.creator-body-switch windows.creator-color-input windows.patchnotes-desktop windows.patchnotes-compact windows.patchnotes-short recovery.update-handoff-desktop recovery.update-handoff-compact recovery.update-handoff-short recovery.maintenance-notice-desktop recovery.maintenance-notice-compact recovery.maintenance-notice-short movement.creator-female-walk `
+          & (Join-Path $pack "agx.exe") qa run --pack . --output $results --driver harness --ready-timeout 240 --require-execution --json `
+            harness.selftest.click-roundtrip windows.bag.open-close windows.spellbook-icon chat.input.focus-type windows.creator-female-appearance windows.creator-female-compact windows.creator-female-short windows.creator-female-customization windows.creator-body-switch windows.creator-color-input windows.patchnotes-desktop windows.patchnotes-compact windows.patchnotes-short recovery.update-handoff-desktop recovery.update-handoff-compact recovery.update-handoff-short recovery.maintenance-notice-desktop recovery.maintenance-notice-compact recovery.maintenance-notice-short movement.creator-female-walk world-content.editor-draft `
             | Tee-Object -FilePath (Join-Path $evidence "qa-run.json")
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

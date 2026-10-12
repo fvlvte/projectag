@@ -144,7 +144,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         id: rust
         with:
-          toolchain: "1.98.1"
+          toolchain: "1.99.0"
           components: rustfmt
       - name: Documentation check
         run: python3 scripts/check-docs.py
@@ -208,6 +208,25 @@ jobs:
           python3 scripts/test-character-creator-assets.py
           python3 backend/scripts/test-environment-harness.py
           python3 backend/scripts/test-qa-hosted-client.py
+          python3 -W error scripts/test_directional_shadow_cascades.py
+          python3 -W error scripts/test_island_sector_clip.py
+          python3 -W error scripts/test_emberdawn_heightfield.py
+          python3 -W error scripts/test_emberdawn_atmosphere.py
+          python3 -W error scripts/test_shores_creatures.py
+          python3 -W error scripts/test_client_performance.py
+          python3 -W error scripts/test_metal_gpu_spans.py
+          python3 -W error backend/scripts/test-log-collector.py
+          python3 -W error backend/scripts/test-projectag-email-setup.py
+          python3 -W error tests/test_browser_fixture.py
+          python3 -W error tests/test_configure_infura.py
+          python3 -W error tests/test_fetch_production_diagnostics.py
+          python3 -W error tests/test_production_profiling.py
+          python3 -W error -m unittest discover -s scripts/agent-hooks -p 'test_*.py'
+          python3 scripts/test_vendor_hunks.py
+          python3 -W error scripts/test_building_asset_qa.py
+          python3 -W error scripts/test_shores_firepit.py
+          python3 -W error scripts/test_shores_supplied_animation.py
+          python3 -W error scripts/test_shores_supplied.py
       - name: Public PR title and body scan
         if: ${{ github.event_name == 'pull_request' }}
         env:
@@ -226,7 +245,17 @@ jobs:
       - name: QA catalogue validation
         run: cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa validate
       - name: Tool assertion and deployment contracts
-        run: cargo test --locked --manifest-path tools/agx/Cargo.toml
+        run: >-
+          cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml --
+          check --id agx.tests --report "$RUNNER_TEMP/agx-check-static.json"
+      - name: Upload AGX check report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: agx-check-static
+          path: ${{ runner.temp }}/agx-check-static.json
+          if-no-files-found: warn
+          retention-days: 14
       - name: Patch-note nano and deploy terminal flow
         run: python3 tools/agx/tests/patchnotes_terminal.py --agx tools/agx/target/debug/agx --report "$RUNNER_TEMP/patchnotes-terminal.json"
       - name: Upload patch-note terminal evidence
@@ -265,7 +294,7 @@ jobs:
         if: ${{ !cancelled() && steps.rust.outcome == 'success' }}
         run: |
           set -euo pipefail
-          for root in . backend tools/agx tools/wgsl-check examples/moonlight-counter examples/harmony-games; do
+          for root in . backend tools/agx tools/wgsl-check examples/moonlight-counter examples/harmony-games examples/harmony-starter crates/harmony-game-rules examples/harmony-crab-courier; do
             echo "== cargo fmt --check ($root)"
             (cd "$root" && cargo fmt --check)
           done
@@ -298,7 +327,7 @@ jobs:
           bash .github/scripts/git-crypt-unlock.sh
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.98.1"
+          toolchain: "1.99.0"
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         continue-on-error: true
@@ -337,6 +366,10 @@ jobs:
         run: |
           cargo test -p moonlight --lib --features websocket,test-support,qa-harness
           cargo test -p moonlight --lib --features 3d,websocket,test-support,qa-harness
+      - name: Moonlight ray-tracing example compiles (dev-only)
+        # Compile only: runners have no ray-query GPU, and no shipped feature
+        # set enables `raytracing`. Run it by hand on an Apple9+ Mac.
+        run: cargo check --locked -p moonlight --example raytracing --features 3d,raytracing
       - name: Independent Moonlight host
         run: CARGO_TARGET_DIR=target cargo test --locked --manifest-path examples/moonlight-counter/Cargo.toml
       - name: Harmony example rules and application components
@@ -433,7 +466,7 @@ jobs:
           bash .github/scripts/git-crypt-unlock.sh
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.98.1"
+          toolchain: "1.99.0"
       - uses: Swatinem/rust-cache@v2
         continue-on-error: true
         with:
@@ -565,7 +598,7 @@ jobs:
           bash .github/scripts/git-crypt-unlock.sh
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.98.1"
+          toolchain: "1.99.0"
       - uses: Swatinem/rust-cache@v2
         continue-on-error: true
         with:
