@@ -60,7 +60,7 @@ jobs:
           exec > "$R/results/runner.log" 2>&1
           set -u -o pipefail
           umask 077
-          restored=0; [ -f ci-cache.enc ] && restored=1
+          restored=0; if [ -f ci-cache.enc ] && [ "$(stat -c %s ci-cache.enc)" -gt 300000000 ]; then restored=1; fi  # a tiny cache counts as none
           bash .github/scripts/git-crypt-unlock.sh
           # real credentials never take part in a run: delete them, then write dummy placeholders for build scripts
           find backend/deploy -type f \( -name '*.env' -o -name '*.token' -o -name '*.password' -o -name '*.key' -o -path '*/certs/*' \) -delete 2>/dev/null
@@ -89,7 +89,7 @@ jobs:
           exit 0
 
       - name: save cache
-        if: always() && steps.restore.outputs.cache-matched-key == ''
+        if: always() && hashFiles('ci-cache.enc') != ''
         uses: actions/cache/save@v4
         with:
           path: ci-cache.enc
