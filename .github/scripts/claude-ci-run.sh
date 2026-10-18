@@ -21,8 +21,8 @@ bash .github/scripts/git-crypt-unlock.sh
 find backend/deploy -type f \( -name '*.env' -o -name '*.token' -o -name '*.password' -o -name '*.key' -o -path '*/certs/*' \) -delete 2>/dev/null
 rm -f admin/src/config.ts backend/scripts/qa-hosted-client.py backend/scripts/test-projectag-email-setup.py
 printf '%032d\n' 0 > backend/deploy/download.token; printf 'placeholder-0000\n' > backend/deploy/download.password; printf '%032d\n' 0 > backend/deploy/inbox-tool.token
-# the release identity carries a real release seed: keep only its public version fields, zero the key
-python3 -c 'import json; p="backend/deploy/release-identity.json"; d=json.load(open(p)); d["signing_key"]="0"*64; open(p,"w").write(json.dumps(d))'
+# the release identity carries a real release seed: keep only its public version fields, swap the key for a fixed dummy (all-zero is rejected by ReleaseIdentity::parse)
+python3 -c 'import json; p="backend/deploy/release-identity.json"; d=json.load(open(p)); d["signing_key"]="01"*32; open(p,"w").write(json.dumps(d))'
 # one target dir for every workspace (root, backend, tools/agx), so one cache serves the run
 export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" CARGO_BUILD_JOBS="$NPROC" CARGO_TERM_COLOR=never CARGO_INCREMENTAL=0
 cache_run="$(jq -r '.cache_run // ""' .claude-ci/meta.json)"; save="$(jq -r '.save_cache // false' .claude-ci/meta.json)"
