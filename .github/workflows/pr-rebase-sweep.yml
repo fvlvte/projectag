@@ -1,10 +1,12 @@
 # Keeps every open, same-repo PR conflict-free with master automatically.
 # Runs on every push to master: rebases each open PR branch and pushes the
-# result straight back (force-with-lease) when it's clean, so qa-linux /
-# qa-windows-harness re-run on their own via `synchronize`. A branch with a
-# conflict is left untouched and only logged: git-crypt makes GitHub see every
-# encrypted file as one blob, so such a PR is merged from a laptop with
-# `cargo agx repo merge <n>` — see .github/scripts/rebase-open-prs.py.
+# result straight back (force-with-lease) when it's clean. A GITHUB_TOKEN push
+# does not start qa-linux or qa-windows-harness, so after a clean push this
+# job dispatches those workflows with the pull request number (actions: write).
+# A failed dispatch fails the job after the worktrees are removed. A branch
+# with a conflict is left untouched and only logged: git-crypt makes GitHub
+# see every encrypted file as one blob, so such a PR is merged from a laptop
+# with `cargo agx repo merge <n>` — see .github/scripts/rebase-open-prs.py.
 name: pr-rebase-sweep
 
 on:
@@ -19,6 +21,7 @@ concurrency:
 permissions:
   contents: write
   pull-requests: read
+  actions: write
 
 jobs:
   sweep:

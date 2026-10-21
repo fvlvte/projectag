@@ -6,11 +6,18 @@
 # directly. Nothing here publishes a binary; evidence stays in private Actions
 # artifacts. `.github/**` is git-crypt-exempt so GitHub can read this file.
 name: qa-linux
+run-name: ${{ github.event.inputs.pr_number && format('pr_number={0}', github.event.inputs.pr_number) || github.event.pull_request.title || github.workflow }}
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Same-repo pull request this run stands in for
+        required: false
+        default: ""
+        type: string
   schedule:
     # Nightly full run on master: every job regardless of changed paths, so
     # drift that no PR touched is caught and reported to QA Analyst.
@@ -81,6 +88,9 @@ jobs:
               - 'BUILD'
               - 'STORE_BUILD'
               - '.github/workflows/qa-linux.yml'
+              - 'qa/scenarios/world-content/editor-usability.toml'
+              - 'qa/scenarios/world-content/editor-storeys.toml'
+              - 'qa/scenarios/world-content/editor-emberdawn-atmosphere.toml'
             backend:
               - 'backend/**'
               - 'crates/actors-core/**'
@@ -129,6 +139,14 @@ jobs:
         with:
           fetch-depth: 1
           persist-credentials: false
+      - name: Resolve dispatched pull request
+        id: dispatch_pr
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.pr_number }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_PR: ${{ github.event.inputs.pr_number }}
+          DISPATCH_SHA: ${{ github.sha }}
+        run: python3 .github/scripts/resolve-dispatch-pr.py
       - name: Install tools
         run: |
           sudo apt-get update
@@ -153,10 +171,10 @@ jobs:
           python3 scripts/test_check_doc_impact.py
           python3 scripts/test_project_intake.py
       - name: Repository bloat check
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ github.event_name == 'pull_request' || steps.dispatch_pr.outputs.number }}
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || steps.dispatch_pr.outputs.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || steps.dispatch_pr.outputs.head_sha }}
           FETCH_TOKEN: ${{ github.token }}
         run: |
           # checkout runs with persist-credentials: false, so the base commit
@@ -197,6 +215,8 @@ jobs:
           python3 scripts/test_paperclip_insights.py
           python3 scripts/test_paperclip_redact.py
           python3 scripts/test_check_public_messages.py
+          python3 scripts/test_ci_hosted_admission_guards.py
+          python3 scripts/test_resolve_dispatch_pr.py
           python3 scripts/test_upload_paperclip_qa_summary.py
           python3 scripts/test_paperclip_human_qa.py
           python3 scripts/test_paperclip_issue.py
@@ -208,6 +228,8 @@ jobs:
           python3 scripts/test-character-creator-assets.py
           python3 backend/scripts/test-environment-harness.py
           python3 backend/scripts/test-qa-hosted-client.py
+          python3 backend/scripts/test_hosted_child_restart.py
+          python3 backend/scripts/test_public_boss_e2e.py
           python3 -W error scripts/test_directional_shadow_cascades.py
           python3 -W error scripts/test_island_sector_clip.py
           python3 -W error scripts/test_emberdawn_heightfield.py
@@ -227,11 +249,13 @@ jobs:
           python3 -W error scripts/test_shores_firepit.py
           python3 -W error scripts/test_shores_supplied_animation.py
           python3 -W error scripts/test_shores_supplied.py
+          python3 -B -W error scripts/test_shores_fresh_static.py
+          python3 -B -W error scripts/test_shores_fresh_placement.py
       - name: Public PR title and body scan
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ github.event_name == 'pull_request' || steps.dispatch_pr.outputs.number }}
         env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title || steps.dispatch_pr.outputs.title }}
+          PR_BODY: ${{ github.event.pull_request.body || steps.dispatch_pr.outputs.body }}
         run: python3 .github/scripts/check-public-messages.py
       - uses: Swatinem/rust-cache@v2
         continue-on-error: true
@@ -277,7 +301,7 @@ jobs:
         # fetches it, but it is skipped when an earlier check failed.
         if: ${{ !cancelled() && steps.unlock.outcome == 'success' }}
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || steps.dispatch_pr.outputs.base_sha }}
           FETCH_TOKEN: ${{ github.token }}
         run: |
           if [ -n "$BASE_SHA" ]; then
@@ -414,6 +438,16 @@ jobs:
           # Client test worlds share the process-wide origin used by editor fixtures.
           cargo test -p projectag-client --features projectag-editor,local-sim,engine-test-support --lib -- --test-threads=1
           cargo test -p actors-client --features engine-test-support --lib
+      - name: Unit tests (play-test helper grant, cancellation, and install root)
+        run: cargo test -p projectag-client --features projectag-editor,qa-harness,engine-test-support --lib -- --test-threads=1 playtest_helper::tests::
+      - name: Unit tests (helper offline redemption)
+        run: cargo test -p projectag-client --features gm-playtest-helper,engine-test-support --lib -- --test-threads=1 draft_child_rejects_bad_mode_isolation_and_offline_redemption
+      - name: Unit tests (editor save readback and stair landings)
+        run: cargo test -p projectag-client --features engine-test-support,qa-harness,projectag-editor --lib -- --test-threads=1 readback_and_landing
+      - name: Unit tests (editor publication under qa-harness)
+        run: cargo test -p projectag-client --features projectag-editor,local-sim,engine-test-support,qa-harness --lib -- --test-threads=1 games::projectag::qa::tests:: editor_fix_scenarios_read_existing_state_paths
+      - name: Unit tests (creator body-armor fixture)
+        run: cargo test -p projectag-client --features local-sim,engine-test-support,qa-harness --lib -- --test-threads=1 creator_body_armor_fixture_requires_the_qa_session_and_release
       - name: Backend product dependency and routing boundaries
         # The compile check omits the hosted-admission feature: Actions swaps
         # its native crate for an empty stub (scripts/vendor-pack.py), so it
@@ -432,6 +466,8 @@ jobs:
           cargo test --manifest-path backend/Cargo.toml -p api-gateway -p auth-service --no-default-features --features api-gateway/projectag,auth-service/projectag composition_tests
           cargo test --manifest-path backend/Cargo.toml -p config-service --no-default-features
           cargo test --manifest-path backend/Cargo.toml -p config-service --no-default-features --features actors
+      - name: Shipped service image leaves hosted admission off
+        run: python3 scripts/ci-hosted-admission-guards.py
       - name: Shared backend infrastructure
         run: |
           cargo test --manifest-path backend/Cargo.toml -p actors360-common --features projectag-web
@@ -636,9 +672,9 @@ jobs:
       - name: Client harness scenarios
         run: |
           set -euo pipefail
-          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --json \
+          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json \
             --output "$RUNNER_TEMP/qa-client" \
-            harness.selftest.click-roundtrip windows.bag.open-close windows.spellbook-icon chat.input.focus-type windows.creator-female-appearance windows.creator-female-compact windows.creator-female-short windows.creator-female-customization windows.creator-body-switch windows.creator-color-input windows.patchnotes-desktop windows.patchnotes-compact windows.patchnotes-short recovery.update-handoff-desktop recovery.update-handoff-compact recovery.update-handoff-short recovery.maintenance-notice-desktop recovery.maintenance-notice-compact recovery.maintenance-notice-short movement.creator-female-walk movement.hosted-animation-manifest \
+            harness.selftest.click-roundtrip windows.bag.open-close windows.spellbook-icon chat.input.focus-type windows.creator-female-appearance windows.creator-female-armor windows.creator-female-compact windows.creator-female-short windows.creator-female-customization windows.creator-body-switch windows.creator-color-input windows.patchnotes-desktop windows.patchnotes-compact windows.patchnotes-short recovery.update-handoff-desktop recovery.update-handoff-compact recovery.update-handoff-short recovery.maintenance-notice-desktop recovery.maintenance-notice-compact recovery.maintenance-notice-short movement.creator-female-walk movement.hosted-animation-manifest \
             | tee "$RUNNER_TEMP/qa-client-run.json"
       - name: Fixture PNG suites
         id: fixtures
@@ -665,9 +701,69 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  windows-owned-files:
+    name: Windows plaintext owner tests
+    needs: changes
+    if: ${{ needs.changes.outputs.client == 'true' || github.event_name != 'pull_request' }}
+    runs-on: windows-latest
+    timeout-minutes: 180
+    env:
+      GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
+      CARGO_BUILD_WARNINGS: deny
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Install git-crypt
+        shell: pwsh
+        run: choco install git-crypt -y
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.0"
+      - name: Unlock git-crypt
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v python3 >/dev/null; then
+            mkdir -p "$HOME/bin"
+            printf '%s\n' '#!/usr/bin/env bash' 'exec python "$@"' > "$HOME/bin/python3"
+            chmod +x "$HOME/bin/python3"
+            echo "$HOME/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/bin:$PATH"
+          fi
+          bash .github/scripts/git-crypt-unlock.sh
+      - name: Play-test lifecycle and plaintext owner
+        shell: bash
+        run: cargo test -p projectag-client --features projectag-editor,engine-test-support --lib playtest_lifecycle:: -- --test-threads=1
+
+  ios-voice-io-race:
+    name: iOS voice callback race
+    needs: changes
+    if: ${{ needs.changes.outputs.client == 'true' || github.event_name != 'pull_request' }}
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Install git-crypt
+        run: |
+          set -euo pipefail
+          if ! command -v git-crypt >/dev/null; then
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install git-crypt
+          fi
+      - name: Unlock git-crypt
+        run: bash .github/scripts/git-crypt-unlock.sh
+      - name: Voice I/O callback ordering
+        run: bash mobile/ios/voice-io-race/run.sh
+
   report:
     name: report to Paperclip
-    needs: [static, core, backend, client]
+    needs: [changes, static, core, backend, client, windows-owned-files, ios-voice-io-race]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -678,11 +774,11 @@ jobs:
       PAPERCLIP_QA_WORKFLOW: qa-linux
       # This is the automation gate into review, not final visual acceptance.
       # A product assertion, harness error or fixture panic fails the gate.
-      PAPERCLIP_QA_RESULT: ${{ (contains(fromJSON('["success","skipped"]'), needs.static.result) && contains(fromJSON('["success","skipped"]'), needs.core.result) && contains(fromJSON('["success","skipped"]'), needs.backend.result) && contains(fromJSON('["success","skipped"]'), needs.client.result)) && 'success' || 'failure' }}
-      PAPERCLIP_QA_JOBS: static=${{ needs.static.result }} core=${{ needs.core.result }} backend=${{ needs.backend.result }} client=${{ needs.client.result }} client-fixtures=${{ needs.client.outputs.fixtures_outcome || 'not run' }}
+      PAPERCLIP_QA_RESULT: ${{ (needs.changes.result == 'success' && needs.static.result == 'success' && ((github.event_name != 'pull_request' && needs.core.result == 'success' && needs.backend.result == 'success' && needs.client.result == 'success' && needs.windows-owned-files.result == 'success' && needs.ios-voice-io-race.result == 'success') || (github.event_name == 'pull_request' && (needs.core.result == 'success' || (needs.core.result == 'skipped' && needs.changes.outputs.rust == 'false')) && (needs.backend.result == 'success' || (needs.backend.result == 'skipped' && needs.changes.outputs.backend == 'false')) && (needs.client.result == 'success' || (needs.client.result == 'skipped' && needs.changes.outputs.client == 'false')) && (needs.windows-owned-files.result == 'success' || (needs.windows-owned-files.result == 'skipped' && needs.changes.outputs.client == 'false')) && (needs.ios-voice-io-race.result == 'success' || (needs.ios-voice-io-race.result == 'skipped' && needs.changes.outputs.client == 'false'))))) && 'success' || 'failure' }}
+      PAPERCLIP_QA_JOBS: changes=${{ needs.changes.result }} static=${{ needs.static.result }} core=${{ needs.core.result }} backend=${{ needs.backend.result }} client=${{ needs.client.result }} windows-owned-files=${{ needs.windows-owned-files.result }} ios-voice-io-race=${{ needs.ios-voice-io-race.result }} client-fixtures=${{ needs.client.outputs.fixtures_outcome || 'not run' }}
       PAPERCLIP_QA_REQUIRED_ARTIFACTS: ${{ format('{0} {1}', needs.client.result != 'skipped' && 'projectag-qa-linux-evidence' || '', needs.backend.result != 'skipped' && 'projectag-qa-backend-evidence' || '') }}
       PAPERCLIP_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      PAPERCLIP_PR_NUMBER: ${{ github.event.pull_request.number }}
+      PAPERCLIP_PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
       # Nightly runs have no issue branch; the summaries go to the standing
       # issue `QA nightly` instead.
       PAPERCLIP_NIGHTLY: ${{ github.event_name == 'schedule' && '1' || '' }}

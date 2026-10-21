@@ -18,7 +18,8 @@
 #              comment; the runtime turns that into `in_review`
 #   * fail  -> the comment is posted (it wakes the implementer); the label is
 #              removed so a later green run cannot advance stale work
-#   * pending (another required workflow is still running) -> nothing is
+#   * pending (another required workflow is still running, or no run for
+#              this head belongs to this pull request) -> nothing is
 #              posted; the workflow that finishes last posts the gate
 #   * PAPERCLIP_NIGHTLY=1 -> the summaries go to the standing issue
 #     `QA nightly` (created when missing), never to a branch issue
@@ -325,12 +326,36 @@ def summarize(path):
     return "\n".join(lines), bool(failed)
 
 
+_PR_MARKER = re.compile(r"\bpr_number=([0-9]+)\b")
+
+
+def _listed_pr_number(run):
+    title = run.get("display_title")
+    if isinstance(title, str):
+        found = _PR_MARKER.search(title)
+        if found:
+            return found.group(1)
+    return ""
+
+
+def _run_belongs_to_pr(run):
+    if run.get("event") == "pull_request":
+        return True
+    if run.get("event") != "workflow_dispatch":
+        return False
+    return bool(PR_NUMBER) and _listed_pr_number(run) == PR_NUMBER
+
+
 def other_workflow_states():
-    """Latest run per required workflow for the PR head, from the GitHub API. This run's own
-    status is `in_progress` while the report job executes, so it is taken from the environment."""
+    """Newest other required run for this PR head. Skip action_required, then keep a pull_request
+    event or a workflow_dispatch display_title of pr_number for this PR. Own status comes from the environment."""
     states = {}
     runs = github(f"/repos/{REPO}/actions/runs?head_sha={HEAD}&per_page=50") if HEAD != "unknown" else None
     for run in (runs or {}).get("workflow_runs", []):
+        if run.get("conclusion") == "action_required":
+            continue
+        if not _run_belongs_to_pr(run):
+            continue
         name = run.get("name")
         if name in REQUIRED_WORKFLOWS and name != WORKFLOW and name not in states:
             states[name] = {"status": run.get("status"), "conclusion": run.get("conclusion"), "url": run.get("html_url")}

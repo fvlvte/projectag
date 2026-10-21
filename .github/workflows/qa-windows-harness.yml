@@ -3,9 +3,16 @@
 # `qa-windows` label is added and on every later push to a labelled PR, so the
 # Paperclip QA gate (job report-paperclip) always has a run for the PR head.
 name: qa-windows-harness
+run-name: ${{ github.event.inputs.pr_number && format('pr_number={0}', github.event.inputs.pr_number) || github.event.pull_request.title || github.workflow }}
 
 on:
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Same-repo pull request this run stands in for
+        required: false
+        default: ""
+        type: string
   pull_request:
     types: [labeled, synchronize]
 
@@ -176,7 +183,7 @@ jobs:
           [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point([int]($screen.Width / 2), [int]($screen.Height / 2))
           Set-Location $pack
           & (Join-Path $pack "agx.exe") qa run --pack . --output $results --driver harness --ready-timeout 240 --require-execution --json `
-            harness.selftest.click-roundtrip windows.bag.open-close windows.spellbook-icon chat.input.focus-type windows.creator-female-appearance windows.creator-female-compact windows.creator-female-short windows.creator-female-customization windows.creator-body-switch windows.creator-color-input windows.patchnotes-desktop windows.patchnotes-compact windows.patchnotes-short recovery.update-handoff-desktop recovery.update-handoff-compact recovery.update-handoff-short recovery.maintenance-notice-desktop recovery.maintenance-notice-compact recovery.maintenance-notice-short movement.creator-female-walk world-content.editor-draft `
+            harness.selftest.click-roundtrip windows.bag.open-close windows.spellbook-icon chat.input.focus-type windows.creator-female-appearance windows.creator-female-armor windows.creator-female-compact windows.creator-female-short windows.creator-female-customization windows.creator-body-switch windows.creator-color-input windows.patchnotes-desktop windows.patchnotes-compact windows.patchnotes-short recovery.update-handoff-desktop recovery.update-handoff-compact recovery.update-handoff-short recovery.maintenance-notice-desktop recovery.maintenance-notice-compact recovery.maintenance-notice-short movement.creator-female-walk world-content.editor-draft `
             | Tee-Object -FilePath (Join-Path $evidence "qa-run.json")
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -208,7 +215,7 @@ jobs:
       PAPERCLIP_QA_RESULT: ${{ needs.run-qa.result == 'success' && 'success' || 'failure' }}
       PAPERCLIP_QA_JOBS: build-qa-pack=${{ needs.build-qa-pack.result }} run-qa=${{ needs.run-qa.result }}
       PAPERCLIP_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      PAPERCLIP_PR_NUMBER: ${{ github.event.pull_request.number }}
+      PAPERCLIP_PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout report helpers
