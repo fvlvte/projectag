@@ -439,13 +439,15 @@ jobs:
           cargo test -p projectag-client --features projectag-editor,local-sim,engine-test-support --lib -- --test-threads=1
           cargo test -p actors-client --features engine-test-support --lib
       - name: Unit tests (play-test helper grant, cancellation, and install root)
-        run: cargo test -p projectag-client --features projectag-editor,qa-harness,engine-test-support --lib -- --test-threads=1 playtest_helper::tests::
+        run: |
+          cargo test -p projectag-client --features projectag-editor,qa-harness,engine-test-support --lib -- --test-threads=1 playtest_helper::tests::
       - name: Unit tests (helper offline redemption)
         run: cargo test -p projectag-client --features gm-playtest-helper,engine-test-support --lib -- --test-threads=1 draft_child_rejects_bad_mode_isolation_and_offline_redemption
       - name: Unit tests (editor save readback and stair landings)
         run: cargo test -p projectag-client --features engine-test-support,qa-harness,projectag-editor --lib -- --test-threads=1 readback_and_landing
       - name: Unit tests (editor publication under qa-harness)
-        run: cargo test -p projectag-client --features projectag-editor,local-sim,engine-test-support,qa-harness --lib -- --test-threads=1 games::projectag::qa::tests:: editor_fix_scenarios_read_existing_state_paths
+        run: |
+          cargo test -p projectag-client --features projectag-editor,local-sim,engine-test-support,qa-harness --lib -- --test-threads=1 games::projectag::qa::tests:: editor_fix_scenarios_read_existing_state_paths
       - name: Unit tests (creator body-armor fixture)
         run: cargo test -p projectag-client --features local-sim,engine-test-support,qa-harness --lib -- --test-threads=1 creator_body_armor_fixture_requires_the_qa_session_and_release
       - name: Backend product dependency and routing boundaries
@@ -735,7 +737,8 @@ jobs:
           bash .github/scripts/git-crypt-unlock.sh
       - name: Play-test lifecycle and plaintext owner
         shell: bash
-        run: cargo test -p projectag-client --features projectag-editor,engine-test-support --lib playtest_lifecycle:: -- --test-threads=1
+        run: |
+          cargo test -p projectag-client --features projectag-editor,engine-test-support --lib playtest_lifecycle:: -- --test-threads=1
 
   ios-voice-io-race:
     name: iOS voice callback race
