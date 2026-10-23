@@ -477,6 +477,12 @@ jobs:
           cargo test --manifest-path backend/Cargo.toml -p identity-policy --features server-reservations
       - name: Shared-core authority tests
         run: cargo test --manifest-path backend/Cargo.toml -p projectag-core --features authority
+      - name: Service and shard fixture suites
+        timeout-minutes: 45
+        run: |
+          cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check \
+            --id backend.projectag-service --id backend.projectag-shard \
+            --id backend.projectag-service.public-boss-journey --id backend.projectag-service.network-load
 
   backend:
     name: backend (isolated PostgreSQL harnesses)
@@ -555,6 +561,16 @@ jobs:
               print("Required scenarios did not pass: " + ", ".join(sorted(failed)))
           sys.exit(1 if failed else 0)
           PY
+      - name: Registered service database boundaries
+        timeout-minutes: 90
+        run: |
+          cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check \
+            --id backend.projectag-service.delivery \
+            --id backend.projectag-ownership-database \
+            --id backend.projectag-service-content-audit \
+            --id backend.projectag-publication-database \
+            --id backend.projectag-shores-migration \
+            --id backend.projectag-authority-lifecycle
       - name: Upload backend evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
