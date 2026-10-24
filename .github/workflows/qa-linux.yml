@@ -450,6 +450,10 @@ jobs:
           cargo test -p projectag-client --features projectag-editor,local-sim,engine-test-support,qa-harness --lib -- --test-threads=1 games::projectag::qa::tests:: editor_fix_scenarios_read_existing_state_paths
       - name: Unit tests (creator body-armor fixture)
         run: cargo test -p projectag-client --features local-sim,engine-test-support,qa-harness --lib -- --test-threads=1 creator_body_armor_fixture_requires_the_qa_session_and_release
+      - name: Unit tests (QA window flags)
+        run: cargo test -p projectag-client --features engine-test-support,qa-harness --lib -- --test-threads=1 app::qa::tests
+      - name: Unit tests (character creator probes)
+        run: cargo test -p projectag-client --features engine-test-support,qa-harness --lib -- --test-threads=1 games::projectag::character_creator::probe::tests
       - name: Backend product dependency and routing boundaries
         # The compile check omits the hosted-admission feature: Actions swaps
         # its native crate for an empty stub (scripts/vendor-pack.py), so it
