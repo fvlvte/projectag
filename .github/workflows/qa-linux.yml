@@ -353,6 +353,7 @@ jobs:
         with:
           toolchain: "1.99.0"
           targets: wasm32-unknown-unknown
+          components: clippy
       - uses: Swatinem/rust-cache@v2
         continue-on-error: true
         with:
@@ -477,6 +478,7 @@ jobs:
       - name: Shared backend infrastructure
         run: |
           cargo test --manifest-path backend/Cargo.toml -p actors360-common --features projectag-web
+          cargo clippy --locked --manifest-path backend/Cargo.toml -p actors360-common --features projectag-web --all-targets -- -D warnings
           cargo test --manifest-path backend/Cargo.toml -p runtime-diagnostics --features diagnostics-system
           cargo test --manifest-path backend/Cargo.toml -p identity-policy --features server-reservations
       - name: Shared-core authority tests
