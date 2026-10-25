@@ -98,6 +98,7 @@ jobs:
               - 'assets/content/**'
               # The job drives agx's backend harnesses and catalogued scenarios.
               - 'tools/agx/**'
+              - 'tools/agx-core/**'
               - 'qa/**'
               # auth-service's Harmony suite drives the real worker script.
               - 'scripts/harmony*.py'
@@ -115,6 +116,7 @@ jobs:
               - 'assets/**'
               - 'qa/**'
               - 'tools/agx/**'
+              - 'tools/agx-core/**'
               - 'vendor/**'
               - 'mobile/**'
               - 'Cargo.toml'
@@ -209,6 +211,10 @@ jobs:
         run: |
           python3 scripts/test_check_docs.py
           python3 scripts/test_check_suppressions.py
+          python3 scripts/check-test-layout.py
+          python3 scripts/test_check_test_layout.py
+          python3 scripts/check-ui-glyphs.py
+          python3 scripts/test_check_ui_glyphs.py
           python3 scripts/test_count_loc.py
           python3 scripts/test_check_bloat.py
           python3 scripts/test_repo_trackers.py
@@ -228,6 +234,7 @@ jobs:
           python3 scripts/test-character-creator-assets.py
           python3 backend/scripts/test-environment-harness.py
           python3 backend/scripts/test-qa-hosted-client.py
+          python3 backend/scripts/test_qa_hosted_editor.py
           python3 backend/scripts/test_hosted_child_restart.py
           python3 backend/scripts/test_public_boss_e2e.py
           python3 -W error scripts/test_directional_shadow_cascades.py
@@ -391,17 +398,13 @@ jobs:
         # Twice: the 2D build, then `3d`, the only build that compiles the gfx
         # quality tables, mesh LOD, scene3d, resume and render-profile tests.
         run: |
-          cargo test -p moonlight --lib --features websocket,test-support,qa-harness
-          cargo test -p moonlight --lib --features 3d,websocket,test-support,qa-harness
+          cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check --id moonlight.lib.harness.2d --id moonlight.lib.harness
       - name: "Moonlight ray tracing: example compiles, GPU-free unit tests"
         # Shipped desktop sets enable `raytracing` (opt-in, default Off).
         # Runners have no ray-query GPU, so the example is compile-only;
         # run it by hand on an Apple9+ Mac.
         run: |
-          cargo check --locked -p moonlight --example raytracing --features 3d,raytracing
-          cargo test -p moonlight --lib --features 3d,raytracing engine::raytracing
-          cargo test -p moonlight --lib --features 3d,raytracing engine::renderer_options_tests
-          cargo test -p moonlight --lib --features 3d,raytracing engine::rt_shadows
+          cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check --id moonlight.example.raytracing --id moonlight.lib.raytracing
       - name: Independent Moonlight host
         run: CARGO_TARGET_DIR=target cargo test --locked --manifest-path examples/moonlight-counter/Cargo.toml
       - name: Harmony example rules and application components
@@ -472,8 +475,7 @@ jobs:
           cargo check --locked --manifest-path backend/Cargo.toml --no-default-features \
             --features auth-service/projectag,auth-service/harmony,api-gateway/projectag \
             -p api-gateway -p auth-service -p config-service -p projectag-service -p projectag-shard -p migrator
-          cargo test --manifest-path backend/Cargo.toml -p api-gateway -p auth-service --no-default-features --features api-gateway/actors,auth-service/actors composition_tests
-          cargo test --manifest-path backend/Cargo.toml -p api-gateway -p auth-service --no-default-features --features api-gateway/projectag,auth-service/projectag composition_tests
+          cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check --id backend.composition.gateway --id backend.composition.auth
           cargo test --manifest-path backend/Cargo.toml -p config-service --no-default-features
           cargo test --manifest-path backend/Cargo.toml -p config-service --no-default-features --features actors
           cargo test --manifest-path backend/Cargo.toml -p live-ingest-service -- transport_tests::transport_loss_and_verified_room_replacement --exact
@@ -493,7 +495,8 @@ jobs:
         run: |
           cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check \
             --id backend.projectag-service --id backend.projectag-shard \
-            --id backend.projectag-service.public-boss-journey --id backend.projectag-service.network-load
+            --id backend.projectag-service.public-boss-journey --id backend.projectag-service.network-load \
+            --id backend.api-gateway
 
   backend:
     name: backend (isolated PostgreSQL harnesses)
@@ -767,6 +770,33 @@ jobs:
         run: |
           cargo test -p projectag-client --features projectag-editor,engine-test-support --lib playtest_lifecycle:: -- --test-threads=1
 
+  api-gateway-live-spacing:
+    name: api-gateway live spacing
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' || github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-crypt pkg-config libssl-dev cmake clang
+      - name: Unlock git-crypt
+        run: |
+          test -n "${GITCRYPT_KEY_B64}" || { echo "Add repository secret GITCRYPT_KEY_B64"; exit 1; }
+          bash .github/scripts/git-crypt-unlock.sh
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.0"
+      - name: Live splice spacing
+        run: cargo test --locked --manifest-path backend/Cargo.toml -p api-gateway --bin api-gateway live_transport_tests::walking_through_live_proxy_preserves_step_spacing -- --ignored --test-threads=1
+
   ios-voice-io-race:
     name: iOS voice callback race
     needs: changes
@@ -793,7 +823,7 @@ jobs:
 
   report:
     name: report to Paperclip
-    needs: [changes, static, core, backend, client, windows-owned-files, ios-voice-io-race]
+    needs: [changes, static, core, backend, client, windows-owned-files, ios-voice-io-race, api-gateway-live-spacing]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -804,8 +834,8 @@ jobs:
       PAPERCLIP_QA_WORKFLOW: qa-linux
       # This is the automation gate into review, not final visual acceptance.
       # A product assertion, harness error or fixture panic fails the gate.
-      PAPERCLIP_QA_RESULT: ${{ (needs.changes.result == 'success' && needs.static.result == 'success' && ((github.event_name != 'pull_request' && needs.core.result == 'success' && needs.backend.result == 'success' && needs.client.result == 'success' && needs.windows-owned-files.result == 'success' && needs.ios-voice-io-race.result == 'success') || (github.event_name == 'pull_request' && (needs.core.result == 'success' || (needs.core.result == 'skipped' && needs.changes.outputs.rust == 'false')) && (needs.backend.result == 'success' || (needs.backend.result == 'skipped' && needs.changes.outputs.backend == 'false')) && (needs.client.result == 'success' || (needs.client.result == 'skipped' && needs.changes.outputs.client == 'false')) && (needs.windows-owned-files.result == 'success' || (needs.windows-owned-files.result == 'skipped' && needs.changes.outputs.client == 'false')) && (needs.ios-voice-io-race.result == 'success' || (needs.ios-voice-io-race.result == 'skipped' && needs.changes.outputs.client == 'false'))))) && 'success' || 'failure' }}
-      PAPERCLIP_QA_JOBS: changes=${{ needs.changes.result }} static=${{ needs.static.result }} core=${{ needs.core.result }} backend=${{ needs.backend.result }} client=${{ needs.client.result }} windows-owned-files=${{ needs.windows-owned-files.result }} ios-voice-io-race=${{ needs.ios-voice-io-race.result }} client-fixtures=${{ needs.client.outputs.fixtures_outcome || 'not run' }}
+      PAPERCLIP_QA_RESULT: ${{ (needs.changes.result == 'success' && needs.static.result == 'success' && ((github.event_name != 'pull_request' && needs.core.result == 'success' && needs.backend.result == 'success' && needs.client.result == 'success' && needs.windows-owned-files.result == 'success' && needs.ios-voice-io-race.result == 'success' && needs.api-gateway-live-spacing.result == 'success') || (github.event_name == 'pull_request' && (needs.core.result == 'success' || (needs.core.result == 'skipped' && needs.changes.outputs.rust == 'false')) && (needs.backend.result == 'success' || (needs.backend.result == 'skipped' && needs.changes.outputs.backend == 'false')) && (needs.client.result == 'success' || (needs.client.result == 'skipped' && needs.changes.outputs.client == 'false')) && (needs.windows-owned-files.result == 'success' || (needs.windows-owned-files.result == 'skipped' && needs.changes.outputs.client == 'false')) && (needs.ios-voice-io-race.result == 'success' || (needs.ios-voice-io-race.result == 'skipped' && needs.changes.outputs.client == 'false')) && (needs.api-gateway-live-spacing.result == 'success' || (needs.api-gateway-live-spacing.result == 'skipped' && needs.changes.outputs.backend == 'false'))))) && 'success' || 'failure' }}
+      PAPERCLIP_QA_JOBS: changes=${{ needs.changes.result }} static=${{ needs.static.result }} core=${{ needs.core.result }} backend=${{ needs.backend.result }} client=${{ needs.client.result }} windows-owned-files=${{ needs.windows-owned-files.result }} ios-voice-io-race=${{ needs.ios-voice-io-race.result }} api-gateway-live-spacing=${{ needs.api-gateway-live-spacing.result }} client-fixtures=${{ needs.client.outputs.fixtures_outcome || 'not run' }}
       PAPERCLIP_QA_REQUIRED_ARTIFACTS: ${{ format('{0} {1}', needs.client.result != 'skipped' && 'projectag-qa-linux-evidence' || '', needs.backend.result != 'skipped' && 'projectag-qa-backend-evidence' || '') }}
       PAPERCLIP_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       PAPERCLIP_PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}

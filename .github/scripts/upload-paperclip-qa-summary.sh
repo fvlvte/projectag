@@ -346,6 +346,22 @@ def _run_belongs_to_pr(run):
     return bool(PR_NUMBER) and _listed_pr_number(run) == PR_NUMBER
 
 
+def _skipped_windows_pack(run):
+    if (run.get("event") != "pull_request" or run.get("status") != "completed"
+            or run.get("conclusion") not in ("success", "skipped") or not run.get("id")):
+        return False
+    response = github(f"/repos/{REPO}/actions/runs/{run['id']}/jobs?filter=latest&per_page=100")
+    if not isinstance(response, dict) or not isinstance(response.get("jobs"), list):
+        return None
+    jobs = response["jobs"]
+    if (response.get("total_count") != len(jobs)
+            or not all(isinstance(job, dict) and job.get("status") == "completed"
+                       and isinstance(job.get("conclusion"), str) for job in jobs)
+            or not any(job.get("name") == "build-qa-pack" for job in jobs)):
+        return None
+    return all(job["conclusion"] == "skipped" for job in jobs)
+
+
 def other_workflow_states():
     """Newest other required run for this PR head. Skip action_required, then keep a pull_request
     event or a workflow_dispatch display_title of pr_number for this PR. Own status comes from the environment."""
@@ -358,7 +374,14 @@ def other_workflow_states():
             continue
         name = run.get("name")
         if name in REQUIRED_WORKFLOWS and name != WORKFLOW and name not in states:
-            states[name] = {"status": run.get("status"), "conclusion": run.get("conclusion"), "url": run.get("html_url")}
+            skipped = _skipped_windows_pack(run) if name == "qa-windows-harness" else False
+            if skipped:
+                continue
+            states[name] = {
+                "status": "unknown" if skipped is None else run.get("status"),
+                "conclusion": None if skipped is None else run.get("conclusion"),
+                "url": run.get("html_url"),
+            }
     return states
 
 

@@ -17,8 +17,8 @@ on:
     types: [labeled, synchronize]
 
 concurrency:
-  group: qa-windows-harness-${{ github.ref }}
-  cancel-in-progress: true
+  group: qa-windows-harness-${{ github.ref }}-${{ (github.event_name == 'workflow_dispatch' || github.event.label.name == 'qa-windows' || (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'qa-windows'))) && 'eligible' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' || github.event.label.name == 'qa-windows' || (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'qa-windows')) }}
 
 permissions:
   contents: read
