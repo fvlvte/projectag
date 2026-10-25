@@ -369,6 +369,8 @@ jobs:
         run: cargo check --features game,actors
       - name: cargo check --features lua --bin tikdong
         run: cargo check --features lua --bin tikdong
+      - name: Standalone bot keeps the saved broadcast
+        run: cargo test -p tikdong --bin tikdong --features lua -- session_tests::connected_room_uses_the_saved_broadcast --exact
       - name: Independent product clients
         run: |
           cargo check -p projectag-client --bin projectag
@@ -406,6 +408,7 @@ jobs:
         env:
           CARGO_TARGET_DIR: target
         run: |
+          cargo test --locked --manifest-path crates/harmony-game-rules/Cargo.toml
           cargo test --locked --manifest-path examples/harmony-games/Cargo.toml --no-default-features --lib
           cargo test --locked --manifest-path examples/harmony-games/Cargo.toml --bin harmony-games
       - name: Independent Moonlight browser checks
@@ -473,16 +476,18 @@ jobs:
           cargo test --manifest-path backend/Cargo.toml -p api-gateway -p auth-service --no-default-features --features api-gateway/projectag,auth-service/projectag composition_tests
           cargo test --manifest-path backend/Cargo.toml -p config-service --no-default-features
           cargo test --manifest-path backend/Cargo.toml -p config-service --no-default-features --features actors
+          cargo test --manifest-path backend/Cargo.toml -p live-ingest-service -- transport_tests::transport_loss_and_verified_room_replacement --exact
       - name: Shipped service image leaves hosted admission off
         run: python3 scripts/ci-hosted-admission-guards.py
       - name: Shared backend infrastructure
         run: |
+          cargo test --locked --manifest-path backend/Cargo.toml -p projectag-playtest-package --lib
           cargo test --manifest-path backend/Cargo.toml -p actors360-common --features projectag-web
           cargo clippy --locked --manifest-path backend/Cargo.toml -p actors360-common --features projectag-web --all-targets -- -D warnings
           cargo test --manifest-path backend/Cargo.toml -p runtime-diagnostics --features diagnostics-system
           cargo test --manifest-path backend/Cargo.toml -p identity-policy --features server-reservations
       - name: Shared-core authority tests
-        run: cargo test --manifest-path backend/Cargo.toml -p projectag-core --features authority
+        run: cargo test --manifest-path backend/Cargo.toml -p projectag-core --features authority,schema
       - name: Service and shard fixture suites
         timeout-minutes: 45
         run: |
