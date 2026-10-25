@@ -84,6 +84,7 @@ jobs:
               - 'build_support.rs'
               - '.cargo/**'
               - 'rust-toolchain.toml'
+              - 'checks.toml'
               - 'VERSION'
               - 'BUILD'
               - 'STORE_BUILD'
@@ -370,6 +371,9 @@ jobs:
           prefix-key: qa-linux-core
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Vendored block compiler compatibility (compile only)
+        run: |
+          cargo agx check --id vendor.block.check
       - name: cargo check --features game
         run: cargo check --features game
       - name: cargo check --features game,actors
@@ -579,6 +583,7 @@ jobs:
         timeout-minutes: 90
         run: |
           cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check \
+            --id backend.chess-service-database \
             --id backend.projectag-service.delivery \
             --id backend.projectag-ownership-database \
             --id backend.projectag-service-content-audit \
