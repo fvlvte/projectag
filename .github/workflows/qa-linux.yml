@@ -374,6 +374,10 @@ jobs:
       - name: Vendored block compiler compatibility (compile only)
         run: |
           cargo agx check --id vendor.block.check
+      - name: Vendored UI text measurement and layout regressions
+        run: |
+          cargo test --locked -p bevy_ui --lib widget::text::tests::
+          cargo test --locked -p bevy_ui --lib layout::ui_surface::text_buffer_tests::
       - name: cargo check --features game
         run: cargo check --features game
       - name: cargo check --features game,actors
