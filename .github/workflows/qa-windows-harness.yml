@@ -104,6 +104,24 @@ jobs:
             qa pack "$RUNNER_TEMP/projectag-qa-windows" \
             --target x86_64-pc-windows-msvc
 
+      - name: Build Windows updater library tests
+        run: |
+          cargo xwin test --locked -p projectag-updater --lib --no-run \
+            --target x86_64-pc-windows-msvc --message-format=json-render-diagnostics \
+            > "$RUNNER_TEMP/updater-tests.jsonl"
+          python3 - <<'PY'
+          import json, os, pathlib, shutil
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          messages = [json.loads(line) for line in (root / "updater-tests.jsonl").read_text().splitlines()]
+          executables = [message["executable"] for message in messages
+                         if message.get("reason") == "compiler-artifact"
+                         and message["target"]["name"] == "projectag_updater"
+                         and message["profile"]["test"] and message.get("executable")]
+          if len(executables) != 1:
+              raise SystemExit(f"expected one updater test executable, got {executables}")
+          shutil.copy2(executables[0], root / "projectag-qa-windows" / "updater-tests.exe")
+          PY
+
       - name: Zip private QA pack
         run: |
           (
@@ -165,6 +183,17 @@ jobs:
           $results = Join-Path $env:RUNNER_TEMP "qa-windows-results"
           New-Item -ItemType Directory -Force -Path $results | Out-Null
           python (Join-Path $pack "scripts\test-desktop-updater.py") --launcher (Join-Path $pack "start.exe") --output (Join-Path $results "desktop-updater-runtime.json")
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run Windows updater packed-store tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pack = Join-Path $env:RUNNER_TEMP "qa-expanded\projectag-qa-windows"
+          $results = Join-Path $env:RUNNER_TEMP "qa-windows-results"
+          New-Item -ItemType Directory -Force -Path $results | Out-Null
+          & (Join-Path $pack "updater-tests.exe") patch::packed::tests:: --test-threads=1 --nocapture |
+            Tee-Object -FilePath (Join-Path $results "updater-lib-tests.log")
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run Windows client harness

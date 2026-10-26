@@ -779,6 +779,23 @@ jobs:
         shell: bash
         run: |
           cargo test -p projectag-client --features projectag-editor,engine-test-support --lib playtest_lifecycle:: -- --test-threads=1
+      - name: asset-store Windows adapter and winfs tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_counted() {
+            local expected="$1"
+            shift
+            "$@" 2>&1 | tee asset-store-windows-test.log
+            local passed
+            passed="$(sed -n 's/^test result: ok\. \([0-9]*\) passed.*/\1/p' asset-store-windows-test.log | paste -sd' ' -)"
+            if [ "$passed" != "$expected" ]; then
+              echo "expected passed counts '$expected', got '$passed': $*" >&2
+              exit 1
+            fi
+          }
+          run_counted "5" cargo test --locked -p asset-store --features store --lib store::sys::windows::tests
+          run_counted "6 1" cargo test --locked -p asset-store-winfs --lib --tests
 
   api-gateway-live-spacing:
     name: api-gateway live spacing
