@@ -441,6 +441,7 @@ jobs:
           cargo test -p client-services --features ui,test-support --lib
           cargo test -p actors-core --features live,lua
           cargo test -p projectag-updater --lib
+          cargo test --locked -p tikdong-opus
       - name: Unit tests (editor, actors, authored worlds)
         # Tests that read the authored Shores/Emberfall worlds are gated on
         # `local-sim` (dev/QA simulation, never a shipped set); this variant
