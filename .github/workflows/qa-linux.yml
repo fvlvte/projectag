@@ -499,6 +499,8 @@ jobs:
           cargo test --manifest-path backend/Cargo.toml -p identity-policy --features server-reservations
       - name: Shared-core authority tests
         run: cargo test --manifest-path backend/Cargo.toml -p projectag-core --features authority,schema
+      - name: Shared-core client world 7 slot
+        run: cargo test --manifest-path backend/Cargo.toml -p projectag-core --test authored_geometry world7_uses_the_map_spawn_and_legacy_arrival_stays_put -- --exact
       - name: Service and shard fixture suites
         timeout-minutes: 45
         run: |
