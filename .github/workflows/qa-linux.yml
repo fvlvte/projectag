@@ -234,6 +234,10 @@ jobs:
           python3 scripts/test_import_character_creator_kit.py
           python3 scripts/test-character-creator-assets.py
           python3 backend/scripts/test-environment-harness.py
+          python3 backend/scripts/test_boss_rewards_runner.py
+          python3 backend/scripts/test_ownership_runner.py
+          python3 backend/scripts/test_playtest_runner.py
+          python3 backend/scripts/test_web_receipt_runner.py
           python3 backend/scripts/test-qa-hosted-client.py
           python3 backend/scripts/test_qa_hosted_editor.py
           python3 backend/scripts/test_hosted_child_restart.py
@@ -565,6 +569,9 @@ jobs:
         run: |
           cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run \
             identity.web-accounts economy.ranking.playtime recovery.maintenance-rollout \
+            items.content-audit world-content.shores-migration \
+            world-content.gm-playtest-helper world-content.map-publication \
+            recovery.ownership-database economy.boss-rewards \
             || echo "::warning::backend scenario failures; see the report below"
           # Wrapped cargo/test output shares stdout with the runner, so the
           # report file named by output/qa/latest.txt is the machine-readable
@@ -575,7 +582,7 @@ jobs:
           python3 - "$REPORT_DIR/qa-report.json" <<'PY'
           import json, sys
           report = json.load(open(sys.argv[1]))
-          required = {"identity.web-accounts", "economy.ranking.playtime", "recovery.maintenance-rollout"}
+          required = {"identity.web-accounts", "economy.ranking.playtime", "recovery.maintenance-rollout", "items.content-audit", "world-content.shores-migration", "world-content.gm-playtest-helper", "world-content.map-publication", "recovery.ownership-database", "economy.boss-rewards"}
           passed = {s["id"] for s in report.get("scenarios", []) if s.get("result") == "pass"}
           failed = required - passed
           for s in report.get("scenarios", []):
@@ -724,16 +731,27 @@ jobs:
         id: fixtures
         if: ${{ always() }}
         run: xvfb-run -a cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa fixtures --output "$RUNNER_TEMP/qa-fixtures"
+      - name: Stage public client evidence
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/qa-client-public"
+          rm -rf "$stage"
+          mkdir -p "$stage"
+          if [ -d "$RUNNER_TEMP/qa-client" ]; then
+            (cd "$RUNNER_TEMP/qa-client" && find . -type f -links 1 \
+              ! -ipath '*/data/*' ! -iname 'fixture.json' -print0 \
+              | cpio --null --pass-through --make-directories --quiet "$stage")
+          fi
+          if [ -f "$RUNNER_TEMP/qa-client-run.json" ]; then
+            cp "$RUNNER_TEMP/qa-client-run.json" "$stage/qa-client-run.json"
+          fi
       - name: Upload client evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
           name: projectag-qa-linux-evidence
-          path: |
-            ${{ runner.temp }}/qa-client/**
-            ${{ runner.temp }}/qa-client-run.json
-            !${{ runner.temp }}/qa-client/**/data/**
-            !${{ runner.temp }}/qa-client/**/backend/fixture.json
+          path: ${{ runner.temp }}/qa-client-public/**
           if-no-files-found: warn
           retention-days: 14
       - name: Upload fixture renders
