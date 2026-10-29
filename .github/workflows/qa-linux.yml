@@ -492,6 +492,7 @@ jobs:
             --features auth-service/projectag,auth-service/harmony,api-gateway/projectag \
             -p api-gateway -p auth-service -p config-service -p projectag-service -p projectag-shard -p migrator
           cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check --id backend.composition.gateway --id backend.composition.auth
+          cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check --id backend.auth-service.unit
           cargo test --manifest-path backend/Cargo.toml -p config-service --no-default-features
           cargo test --manifest-path backend/Cargo.toml -p config-service --no-default-features --features actors
           cargo test --manifest-path backend/Cargo.toml -p live-ingest-service -- transport_tests::transport_loss_and_verified_room_replacement --exact
