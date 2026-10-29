@@ -355,7 +355,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git-crypt pkg-config libssl-dev cmake clang lld llvm nasm \
             libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-0 \
-            libx11-dev libxi-dev \
+            libx11-dev libxi-dev xvfb xauth \
             libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev libvulkan-dev mesa-vulkan-drivers libvulkan1
       - name: Unlock git-crypt
         run: |
@@ -382,6 +382,9 @@ jobs:
         run: |
           cargo test --locked -p bevy_ui --lib widget::text::tests::
           cargo test --locked -p bevy_ui --lib layout::ui_surface::text_buffer_tests::
+      - name: Vendored winit retired window regressions
+        run: |
+          timeout 600s xvfb-run -a cargo agx check --id winit.retired-destroyed --id winit.native-retired-destroyed
       - name: cargo check --features game
         run: cargo check --features game
       - name: cargo check --features game,actors
