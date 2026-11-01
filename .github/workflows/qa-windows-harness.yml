@@ -88,8 +88,9 @@ jobs:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
-      - name: Cache xwin SDK and cargo-xwin
-        uses: actions/cache@v6
+      - name: Restore xwin SDK and cargo-xwin
+        id: xwin-cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.xwin
@@ -107,6 +108,16 @@ jobs:
           cargo run --release --manifest-path tools/agx/Cargo.toml -- \
             qa pack "$RUNNER_TEMP/projectag-qa-windows" \
             --target x86_64-pc-windows-msvc
+
+      - name: Save xwin SDK and cargo-xwin
+        # Only master writes caches; other branches restore master's.
+        if: ${{ github.ref == 'refs/heads/master' && steps.xwin-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.xwin
+            ~/.cargo/bin/cargo-xwin
+          key: xwin-msvc-${{ runner.os }}
 
       - name: Build Windows updater library tests
         run: |

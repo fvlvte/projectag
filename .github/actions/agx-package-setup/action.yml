@@ -15,8 +15,12 @@ inputs:
     description: AGX_CI_PACKAGE_KEY (64 hex)
     required: true
   cache-key:
-    description: Build cache prefix
+    description: Build cache name; jobs that build the same thing pass the same name
     required: true
+  save-cache:
+    description: Whether this job writes the cache (one job per cache name)
+    required: false
+    default: "true"
 runs:
   using: composite
   steps:
@@ -70,6 +74,12 @@ runs:
           backend -> target
           tools/agx -> target
           mobile -> target
-        prefix-key: ${{ inputs.cache-key }}
+        # The key is the cache name plus rust-cache's toolchain, environment
+        # and lockfile hashes, not the job id: shards of one build, and a
+        # keep-alive job, compute the same key.
+        prefix-key: master-packages-v2
+        shared-key: ${{ inputs.cache-key }}
         cache-on-failure: true
-        save-if: ${{ github.ref == 'refs/heads/master' }}
+        # Only master writes caches, and only the job chosen per cache name;
+        # every other job restores. A key that already exists is not saved again.
+        save-if: ${{ github.ref == 'refs/heads/master' && inputs.save-cache == 'true' }}

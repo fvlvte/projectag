@@ -56,23 +56,30 @@ jobs:
       fail-fast: false
       # `cargo agx ci shards` must list exactly these shards and caches
       # (ci::shards::tests::the_workflow_matrix_lists_every_shard). Shards
-      # of one build share its Rust cache.
+      # of one build share its Rust cache; `save` marks its one writer.
       matrix:
         include:
           - shard: light
             cache: light
+            save: true
           - shard: core
             cache: core
+            save: true
           - shard: editor-nosim-1
             cache: editor-nosim
+            save: true
           - shard: editor-nosim-2
             cache: editor-nosim
+            save: false
           - shard: editor-sim-1
             cache: editor-sim
+            save: true
           - shard: editor-sim-2
             cache: editor-sim
+            save: false
           - shard: editor-sim-3
             cache: editor-sim
+            save: false
     steps:
       - uses: actions/checkout@v7
         with:
@@ -104,7 +111,9 @@ jobs:
           gitcrypt-key: ${{ secrets.GITCRYPT_KEY_B64 }}
           native-key-hex: ${{ secrets.PROJECTAG_NATIVE_SIGNING_KEY_HEX }}
           package-key: ${{ secrets.AGX_CI_PACKAGE_KEY }}
-          cache-key: master-packages-gates-${{ matrix.cache }}
+          cache-key: gates-${{ matrix.cache }}
+          # One writer per cache name: the other shards of that build restore it.
+          save-cache: ${{ matrix.save }}
 
       - name: Run and seal the ${{ matrix.shard }} gate shard
         env:
@@ -190,7 +199,7 @@ jobs:
           gitcrypt-key: ${{ secrets.GITCRYPT_KEY_B64 }}
           native-key-hex: ${{ secrets.PROJECTAG_NATIVE_SIGNING_KEY_HEX }}
           package-key: ${{ secrets.AGX_CI_PACKAGE_KEY }}
-          cache-key: master-packages-${{ matrix.kind }}
+          cache-key: package-${{ matrix.kind }}
 
       - name: mingw-w64 cross toolchain
         if: ${{ matrix.kind == 'windows' }}
