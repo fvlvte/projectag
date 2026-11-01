@@ -1,6 +1,6 @@
 # Shared setup for master-packages jobs: git-crypt unlock, the native
-# request-signing key the shipped binaries embed, the pinned Rust toolchain
-# and a master-only build cache. `.github/**` is git-crypt-exempt so GitHub
+# request-signing key the shipped binaries embed and a master-only build
+# cache. The calling job installs the pinned Rust toolchain first. `.github/**` is git-crypt-exempt so GitHub
 # can read this file. Never echo the secrets this action receives.
 name: agx package setup
 description: Unlock the checkout and prepare a shipped-build environment
@@ -14,10 +14,6 @@ inputs:
   package-key:
     description: AGX_CI_PACKAGE_KEY (64 hex)
     required: true
-  targets:
-    description: Extra rustup targets
-    required: false
-    default: ""
   cache-key:
     description: Build cache prefix
     required: true
@@ -66,10 +62,6 @@ runs:
         printf %s "$NATIVE_KEY_HEX" | xxd -r -p > "$key"
         test "$(wc -c < "$key" | tr -d ' ')" = 32 || { echo "::error::PROJECTAG_NATIVE_SIGNING_KEY_HEX is not 32 bytes of hex"; exit 1; }
         echo "PROJECTAG_NATIVE_SIGNING_KEY_FILE=$key" >> "$GITHUB_ENV"
-    - uses: dtolnay/rust-toolchain@master
-      with:
-        toolchain: "1.99.0"
-        targets: ${{ inputs.targets }}
     - uses: Swatinem/rust-cache@v2
       continue-on-error: true
       with:

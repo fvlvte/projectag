@@ -28,6 +28,10 @@ env:
   CARGO_NET_RETRY: "3"
   # Shipped builds deny warnings, as `cargo agx deploy` does.
   CARGO_BUILD_WARNINGS: deny
+  # Shipped binaries carry the real vendor/native-ext tree and its features,
+  # exactly as a local release; unlock still installs the cargo log filter.
+  # `cargo agx ci build` refuses to package a stubbed build.
+  PROJECTAG_CI_NATIVE_EXT: "1"
   RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
 jobs:
@@ -80,12 +84,16 @@ jobs:
             libx11-dev libxi-dev libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev \
             libvulkan-dev mesa-vulkan-drivers libvulkan1 xvfb xauth
 
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.0"
+          targets: ${{ matrix.targets }}
+
       - uses: ./.github/actions/agx-package-setup
         with:
           gitcrypt-key: ${{ secrets.GITCRYPT_KEY_B64 }}
           native-key-hex: ${{ secrets.PROJECTAG_NATIVE_SIGNING_KEY_HEX }}
           package-key: ${{ secrets.AGX_CI_PACKAGE_KEY }}
-          targets: ${{ matrix.targets }}
           cache-key: master-packages-${{ matrix.kind }}
 
       - name: MSVC cross toolchain
@@ -94,6 +102,12 @@ jobs:
           bash .github/scripts/install-xwin-msvc-shims.sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           command -v cargo-xwin >/dev/null || cargo install cargo-xwin --locked
+          # As scripts/pack-windows-standalone.sh: clang-cl defines _MSC_VER,
+          # so mozjpeg-sys jcphuff.c calls _BitScanForward64 without
+          # <intrin.h>; HAVE_BUILTIN_CTZL selects __builtin_ctzl instead.
+          # Do not force-include intrin.h (cc-rs passes CFLAGS to .S files).
+          echo "CFLAGS=-DHAVE_BUILTIN_CTZL -Wno-implicit-function-declaration" >> "$GITHUB_ENV"
+          echo "CXXFLAGS=-DHAVE_BUILTIN_CTZL -Wno-implicit-function-declaration" >> "$GITHUB_ENV"
 
       - name: Android NDK and cargo-ndk
         if: ${{ matrix.kind == 'android' }}
