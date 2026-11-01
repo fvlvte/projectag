@@ -1,5 +1,7 @@
-# Linux QA gate for pull requests: static checks, core and backend tests, and a
-# software-adapter client harness. Job `report` posts one `QA gate` comment per
+# Linux QA gate for pull requests and every master commit: static checks, core
+# and backend tests, and a software-adapter client harness. On master each push
+# runs every job (no path filter, no cancellation) and the `master gate` job is
+# the single pass/fail check that `cargo agx deploy --from-ci` requires. Job `report` posts one `QA gate` comment per
 # run to the Paperclip issue named by the branch and, when every required run
 # is green and the issue carries `awaiting-ci`, advances it to its review
 # stages (.github/scripts/upload-paperclip-qa-summary.sh). No agent is woken
@@ -9,6 +11,8 @@ name: qa-linux
 run-name: ${{ github.event.inputs.pr_number && format('pr_number={0}', github.event.inputs.pr_number) || github.event.pull_request.title || github.workflow }}
 
 on:
+  push:
+    branches: [master]
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
@@ -24,8 +28,10 @@ on:
     - cron: "0 3 * * *"
 
 concurrency:
-  group: qa-linux-${{ github.ref }}
-  cancel-in-progress: true
+  # Pull requests cancel superseded runs; every master commit keeps its own
+  # run so each build number has a gate result.
+  group: qa-linux-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -207,7 +213,17 @@ jobs:
       - name: Node source contracts
         run: |
           set -o pipefail
-          for f in tests/*.test.mjs; do echo "== $f"; node --test "$f"; done
+          # Source-contract failures can quote decrypted source; this log is
+          # public. Keep the full TAP output on the runner and print only test
+          # names, counts and the failing location.
+          status=0
+          for f in tests/*.test.mjs; do
+            echo "== $f"
+            if ! node --test "$f" > "$RUNNER_TEMP/node-test.log" 2>&1; then status=1; fi
+            grep -E '^(not ok|# (tests|pass|fail|cancelled))|^  location: ' "$RUNNER_TEMP/node-test.log" | sed -E "s#$GITHUB_WORKSPACE/##" || true
+          done
+          rm -f "$RUNNER_TEMP/node-test.log"
+          exit "$status"
       - name: Python script tests
         run: |
           python3 scripts/test_check_docs.py
@@ -782,8 +798,15 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
       - name: Install git-crypt
-        shell: pwsh
-        run: choco install git-crypt -y
+        # Chocolatey no longer carries git-crypt; use the upstream Windows
+        # release binary pinned by digest.
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/bin"
+          curl -fsSL --retry 5 -o "$HOME/bin/git-crypt.exe" https://github.com/AGWA/git-crypt/releases/download/0.7.0/git-crypt-0.7.0-x86_64.exe
+          echo "8c54a3b583cd4fc1483c952480116a9c86f771b02d4403fc6d3627b26cf146e2  $HOME/bin/git-crypt.exe" | sha256sum -c -
+          cygpath -w "$HOME/bin" >> "$GITHUB_PATH"
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.99.0"
@@ -872,10 +895,29 @@ jobs:
       - name: Voice I/O callback ordering
         run: bash mobile/ios/voice-io-race/run.sh
 
+  master-gate:
+    # One required result per master commit; agx refuses to deploy a CI
+    # package whose commit lacks a green gate.
+    name: master gate
+    needs: [changes, static, core, backend, client, windows-owned-files, ios-voice-io-race, api-gateway-live-spacing]
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every job passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "job results: $RESULTS"
+          for result in $RESULTS; do
+            [ "$result" = success ] || { echo "master gate failed"; exit 1; }
+          done
+
   report:
     name: report to Paperclip
     needs: [changes, static, core, backend, client, windows-owned-files, ios-voice-io-race, api-gateway-live-spacing]
-    if: ${{ always() }}
+    # Master pushes have no Paperclip issue; `master gate` reports them.
+    if: ${{ always() && github.event_name != 'push' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:

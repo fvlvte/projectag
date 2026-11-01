@@ -2,10 +2,14 @@
 # qa-harness executable or QA pack to R2 / GitHub Releases. It runs when the
 # `qa-windows` label is added and on every later push to a labelled PR, so the
 # Paperclip QA gate (job report-paperclip) always has a run for the PR head.
+# It also runs on every master commit; `cargo agx deploy --from-ci` requires
+# that run to be green.
 name: qa-windows-harness
 run-name: ${{ github.event.inputs.pr_number && format('pr_number={0}', github.event.inputs.pr_number) || github.event.pull_request.title || github.workflow }}
 
 on:
+  push:
+    branches: [master]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -17,7 +21,7 @@ on:
     types: [labeled, synchronize]
 
 concurrency:
-  group: qa-windows-harness-${{ github.ref }}-${{ (github.event_name == 'workflow_dispatch' || github.event.label.name == 'qa-windows' || (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'qa-windows'))) && 'eligible' || github.run_id }}
+  group: qa-windows-harness-${{ github.event_name == 'push' && github.sha || github.ref }}-${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.label.name == 'qa-windows' || (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'qa-windows'))) && 'eligible' || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' || github.event.label.name == 'qa-windows' || (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'qa-windows')) }}
 
 permissions:
@@ -28,7 +32,7 @@ permissions:
 
 jobs:
   build-qa-pack:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.label.name == 'qa-windows' || (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'qa-windows')) }}
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.label.name == 'qa-windows' || (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'qa-windows')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
@@ -230,7 +234,7 @@ jobs:
     needs: [build-qa-pack, run-qa]
     # Runs even when the pack build failed (skipped run-qa): the gate comment
     # must name a failed build, not stay silent.
-    if: ${{ always() && needs.build-qa-pack.result != 'skipped' }}
+    if: ${{ always() && needs.build-qa-pack.result != 'skipped' && github.event_name != 'push' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:

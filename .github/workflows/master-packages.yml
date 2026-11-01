@@ -1,0 +1,125 @@
+# Shippable build packages for every master commit. Each job runs one
+# `cargo agx ci build <kind>`: the same agx compile function a local release
+# runs, under the commit-derived version (MAJOR.MINOR as committed, BUILD =
+# first-parent commit count). Outputs are sealed with AGX_CI_PACKAGE_KEY
+# before upload: this repository is public, so its artifacts are readable by
+# anyone. `cargo agx deploy --from-ci <commit>` downloads, verifies and stages
+# them, and refuses unless this run, qa-linux and qa-windows-harness are green
+# for that commit. Docs: docs/operations/master-ci.md. `.github/**` is
+# git-crypt-exempt so GitHub can read this file.
+name: master-packages
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  # One run per commit; a newer commit never cancels an older build number.
+  group: master-packages-${{ github.sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "3"
+  # Shipped builds deny warnings, as `cargo agx deploy` does.
+  CARGO_BUILD_WARNINGS: deny
+  RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+jobs:
+  package:
+    name: ${{ matrix.kind }}
+    if: ${{ github.ref == 'refs/heads/master' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - kind: gates
+            os: ubuntu-latest
+            targets: wasm32-unknown-unknown
+          - kind: macos
+            os: macos-latest
+            targets: ""
+          - kind: windows
+            os: ubuntu-latest
+            targets: x86_64-pc-windows-msvc
+          - kind: web
+            os: ubuntu-latest
+            targets: wasm32-unknown-unknown
+          - kind: android
+            os: ubuntu-latest
+            targets: aarch64-linux-android
+          - kind: backend
+            os: ubuntu-latest
+            targets: ""
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The build number is the first-parent commit count: full commit
+          # history, trees fetched on demand.
+          fetch-depth: 0
+          filter: tree:0
+          persist-credentials: false
+
+      - name: Free disk
+        if: ${{ runner.os == 'Linux' && matrix.kind != 'android' }}
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - name: Linux build dependencies
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev cmake clang lld llvm nasm binaryen \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-0 \
+            libx11-dev libxi-dev libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev \
+            libvulkan-dev mesa-vulkan-drivers libvulkan1 xvfb xauth
+
+      - uses: ./.github/actions/agx-package-setup
+        with:
+          gitcrypt-key: ${{ secrets.GITCRYPT_KEY_B64 }}
+          native-key-hex: ${{ secrets.PROJECTAG_NATIVE_SIGNING_KEY_HEX }}
+          package-key: ${{ secrets.AGX_CI_PACKAGE_KEY }}
+          targets: ${{ matrix.targets }}
+          cache-key: master-packages-${{ matrix.kind }}
+
+      - name: MSVC cross toolchain
+        if: ${{ matrix.kind == 'windows' }}
+        run: |
+          bash .github/scripts/install-xwin-msvc-shims.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          command -v cargo-xwin >/dev/null || cargo install cargo-xwin --locked
+
+      - name: Android NDK and cargo-ndk
+        if: ${{ matrix.kind == 'android' }}
+        run: |
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+          command -v cargo-ndk >/dev/null || cargo install cargo-ndk --locked
+
+      - name: Build and seal the ${{ matrix.kind }} package
+        env:
+          AGX_CI_PACKAGE_KEY: ${{ secrets.AGX_CI_PACKAGE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.kind }}" = gates ]; then
+            # The client test gates open windows under a virtual display.
+            xvfb-run -a cargo agx ci build gates --out "$RUNNER_TEMP/package" --run-url "$RUN_URL"
+          else
+            cargo agx ci build "${{ matrix.kind }}" --out "$RUNNER_TEMP/package" --run-url "$RUN_URL"
+          fi
+          ls -l "$RUNNER_TEMP/package"
+
+      - name: Upload the sealed package
+        uses: actions/upload-artifact@v7
+        with:
+          name: agx-${{ matrix.kind }}-${{ github.sha }}
+          path: ${{ runner.temp }}/package/*.agxci
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
