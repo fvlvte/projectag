@@ -52,7 +52,7 @@ jobs:
             targets: ""
           - kind: windows
             os: ubuntu-latest
-            targets: x86_64-pc-windows-msvc
+            targets: x86_64-pc-windows-gnu
           - kind: web
             os: ubuntu-latest
             targets: wasm32-unknown-unknown
@@ -96,18 +96,18 @@ jobs:
           package-key: ${{ secrets.AGX_CI_PACKAGE_KEY }}
           cache-key: master-packages-${{ matrix.kind }}
 
-      - name: MSVC cross toolchain
+      - name: mingw-w64 cross toolchain
         if: ${{ matrix.kind == 'windows' }}
         run: |
-          bash .github/scripts/install-xwin-msvc-shims.sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          command -v cargo-xwin >/dev/null || cargo install cargo-xwin --locked
-          # As scripts/pack-windows-standalone.sh: clang-cl defines _MSC_VER,
-          # so mozjpeg-sys jcphuff.c calls _BitScanForward64 without
-          # <intrin.h>; HAVE_BUILTIN_CTZL selects __builtin_ctzl instead.
-          # Do not force-include intrin.h (cc-rs passes CFLAGS to .S files).
-          echo "CFLAGS=-DHAVE_BUILTIN_CTZL -Wno-implicit-function-declaration" >> "$GITHUB_ENV"
-          echo "CXXFLAGS=-DHAVE_BUILTIN_CTZL -Wno-implicit-function-declaration" >> "$GITHUB_ENV"
+          # The same x86_64-pc-windows-gnu build a local `agx deploy windows`
+          # makes (agx resolves mingw when cargo-xwin is absent; do not
+          # install it). The native extension needs posix threads.
+          sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
+          sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix
+          sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
+          # A restored cargo cache may carry cargo-xwin from an older run.
+          rm -f "$HOME/.cargo/bin/cargo-xwin"
+          if command -v cargo-xwin >/dev/null; then echo "::error::cargo-xwin on PATH would select MSVC"; exit 1; fi
 
       - name: Android NDK and cargo-ndk
         if: ${{ matrix.kind == 'android' }}
