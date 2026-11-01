@@ -17,6 +17,10 @@ inputs:
   cache-key:
     description: Build cache name; jobs that build the same thing pass the same name
     required: true
+  extra-workspaces:
+    description: More rust-cache `workspace -> target` lines (one per line)
+    required: false
+    default: ""
   save-cache:
     description: Whether this job writes the cache (one job per cache name)
     required: false
@@ -74,6 +78,7 @@ runs:
           backend -> target
           tools/agx -> target
           mobile -> target
+          ${{ inputs.extra-workspaces }}
         # The key is the cache name plus rust-cache's toolchain, environment
         # and lockfile hashes, not the job id: shards of one build, and a
         # keep-alive job, compute the same key.
