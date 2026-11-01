@@ -45,7 +45,9 @@ jobs:
     name: gates ${{ matrix.shard }}
     if: ${{ github.ref == 'refs/heads/master' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # A cold cache (new Cargo.lock or toolchain) compiles each build from
+    # scratch; the light shard compiles several.
+    timeout-minutes: 150
     permissions:
       contents: read
       # Fail fast: a failing shard cancels this run (last step).
