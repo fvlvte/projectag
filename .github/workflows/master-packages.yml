@@ -4,7 +4,7 @@
 # first-parent commit count). Outputs are sealed with AGX_CI_PACKAGE_KEY
 # before upload: this repository is public, so its artifacts are readable by
 # anyone. `cargo agx deploy --from-ci <commit>` downloads, verifies and stages
-# them, and refuses unless this run, qa-linux and qa-windows-harness are green
+# them, and refuses unless this run is green
 # for that commit. Docs: docs/operations/master-ci.md. `.github/**` is
 # git-crypt-exempt so GitHub can read this file.
 name: master-packages
