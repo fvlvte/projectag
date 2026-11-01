@@ -73,13 +73,13 @@ jobs:
             save: false
           - shard: editor-sim-1
             cache: editor-sim
-            save: true
+            save: false
           - shard: editor-sim-2
             cache: editor-sim
             save: false
           - shard: editor-sim-3
             cache: editor-sim
-            save: false
+            save: true
     steps:
       - uses: actions/checkout@v7
         with:
