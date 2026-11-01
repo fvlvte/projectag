@@ -171,7 +171,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         id: rust
         with:
-          toolchain: "1.99.0"
+          toolchain: "1.99.1"
           components: rustfmt
       - name: Documentation check
         run: python3 scripts/check-docs.py
@@ -379,7 +379,7 @@ jobs:
           bash .github/scripts/git-crypt-unlock.sh
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99.0"
+          toolchain: "1.99.1"
           targets: wasm32-unknown-unknown
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -564,7 +564,7 @@ jobs:
           bash .github/scripts/git-crypt-unlock.sh
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99.0"
+          toolchain: "1.99.1"
       - uses: Swatinem/rust-cache@v2
         continue-on-error: true
         with:
@@ -710,7 +710,7 @@ jobs:
           bash .github/scripts/git-crypt-unlock.sh
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99.0"
+          toolchain: "1.99.1"
       - uses: Swatinem/rust-cache@v2
         continue-on-error: true
         with:
@@ -809,7 +809,7 @@ jobs:
           cygpath -w "$HOME/bin" >> "$GITHUB_PATH"
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99.0"
+          toolchain: "1.99.1"
       - name: Unlock git-crypt
         shell: bash
         run: |
@@ -867,7 +867,7 @@ jobs:
           bash .github/scripts/git-crypt-unlock.sh
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99.0"
+          toolchain: "1.99.1"
       - name: Live splice spacing
         run: cargo test --locked --manifest-path backend/Cargo.toml -p api-gateway --bin api-gateway live_transport_tests::walking_through_live_proxy_preserves_step_spacing -- --ignored --test-threads=1
 
