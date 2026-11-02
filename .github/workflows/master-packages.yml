@@ -3,8 +3,8 @@
 # one job per platform package (`package`). Each job runs
 # `cargo agx ci build <kind>`: the same agx compile or gate function a local
 # release runs, under the commit-derived version (MAJOR.MINOR as committed,
-# BUILD = first-parent commit count) and store counter. The macOS job also
-# builds the iOS device archive unsigned; signing stays on the operator Mac.
+# BUILD = first-parent commit count) and store counter. The `ios` job builds
+# the iOS device archive unsigned; signing stays on the operator Mac.
 # Outputs are sealed with AGX_CI_PACKAGE_KEY before upload: this repository is public, so its
 # artifacts are readable by anyone. `cargo agx deploy --from-ci <commit>`
 # downloads, verifies and stages them (every gate shard exactly once), and
@@ -151,34 +151,32 @@ jobs:
     timeout-minutes: 240
     strategy:
       fail-fast: false
-      # `also` is a second kind the same runner builds after the first: the
-      # unsigned iOS archive shares the macOS runner, which keeps this
-      # workflow at 12 jobs (owner budget 10-12, 2026-11-01).
+      # iOS has its own macOS runner so it builds in parallel with the macOS
+      # package (owner decision 2026-11-01; 13 jobs).
       matrix:
         include:
           - kind: macos
-            also: ios
+            os: macos-latest
+            targets: ""
+            workspaces: ""
+          - kind: ios
             os: macos-latest
             targets: aarch64-apple-ios
             # build_rust_deps.sh builds the iOS app into its own target dir.
             workspaces: mobile -> ios/build/cargo
           - kind: windows
-            also: ""
             os: ubuntu-latest
             targets: x86_64-pc-windows-gnu
             workspaces: ""
           - kind: web
-            also: ""
             os: ubuntu-latest
             targets: wasm32-unknown-unknown
             workspaces: ""
           - kind: android
-            also: ""
             os: ubuntu-latest
             targets: aarch64-linux-android
             workspaces: ""
           - kind: backend
-            also: ""
             os: ubuntu-latest
             targets: ""
             workspaces: ""
@@ -242,6 +240,10 @@ jobs:
           AGX_CI_PACKAGE_KEY: ${{ secrets.AGX_CI_PACKAGE_KEY }}
         run: |
           set -euo pipefail
+          # The ios kind builds with code signing disabled: this job holds no
+          # Apple identity or provisioning. `cargo agx deploy --from-ci
+          # <commit> ios` signs and exports the archive on the operator's Mac.
+          if [ "${{ matrix.kind }}" = ios ]; then xcodebuild -version; fi
           cargo agx ci build "${{ matrix.kind }}" --out "$RUNNER_TEMP/package" --run-url "$RUN_URL"
           ls -l "$RUNNER_TEMP/package"
 
@@ -250,29 +252,6 @@ jobs:
         with:
           name: agx-${{ matrix.kind }}-${{ github.sha }}
           path: ${{ runner.temp }}/package/*.agxci
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 0
-
-      - name: Build and seal the ${{ matrix.also }} package
-        if: ${{ matrix.also != '' }}
-        env:
-          AGX_CI_PACKAGE_KEY: ${{ secrets.AGX_CI_PACKAGE_KEY }}
-        run: |
-          set -euo pipefail
-          # Code signing is disabled: this job holds no Apple identity or
-          # provisioning. `cargo agx deploy --from-ci <commit> ios` signs
-          # and exports the archive on the operator's Mac.
-          xcodebuild -version
-          cargo agx ci build "${{ matrix.also }}" --out "$RUNNER_TEMP/package-also" --run-url "$RUN_URL"
-          ls -l "$RUNNER_TEMP/package-also"
-
-      - name: Upload the sealed ${{ matrix.also }} package
-        if: ${{ matrix.also != '' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: agx-${{ matrix.also }}-${{ github.sha }}
-          path: ${{ runner.temp }}/package-also/*.agxci
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
