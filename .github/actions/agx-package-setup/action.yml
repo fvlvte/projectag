@@ -1,7 +1,10 @@
-# Shared setup for master-packages jobs: git-crypt unlock, the native
-# request-signing key the shipped binaries embed and a master-only build
-# cache. The calling job installs the pinned Rust toolchain first. `.github/**` is git-crypt-exempt so GitHub
-# can read this file. Never echo the secrets this action receives.
+# Shared setup for master-packages jobs: secret presence checks, git-crypt
+# unlock and a master-only build cache. The calling job installs the pinned
+# Rust toolchain first. The native request-signing key is not written here:
+# the build step materializes it for its one command
+# (.github/scripts/with-native-signing-key.sh), so later dependency installs
+# never see it. `.github/**` is git-crypt-exempt so GitHub can read this file.
+# Never echo the secrets this action receives.
 name: agx package setup
 description: Unlock the checkout and prepare a shipped-build environment
 inputs:
@@ -59,17 +62,6 @@ runs:
       env:
         GITCRYPT_KEY_B64: ${{ inputs.gitcrypt-key }}
       run: bash .github/scripts/git-crypt-unlock.sh
-    - name: Native request-signing key
-      shell: bash
-      env:
-        NATIVE_KEY_HEX: ${{ inputs.native-key-hex }}
-      run: |
-        set -euo pipefail
-        umask 077
-        key="$RUNNER_TEMP/native-request-signing.key"
-        printf %s "$NATIVE_KEY_HEX" | xxd -r -p > "$key"
-        test "$(wc -c < "$key" | tr -d ' ')" = 32 || { echo "::error::PROJECTAG_NATIVE_SIGNING_KEY_HEX is not 32 bytes of hex"; exit 1; }
-        echo "PROJECTAG_NATIVE_SIGNING_KEY_FILE=$key" >> "$GITHUB_ENV"
     - uses: Swatinem/rust-cache@v2
       continue-on-error: true
       with:

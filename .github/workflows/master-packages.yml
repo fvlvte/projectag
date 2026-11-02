@@ -119,11 +119,14 @@ jobs:
       - name: Run and seal the ${{ matrix.shard }} gate shard
         env:
           AGX_CI_PACKAGE_KEY: ${{ secrets.AGX_CI_PACKAGE_KEY }}
+          # Only this step sees the native key; the script writes it for the
+          # one command and deletes it after.
+          NATIVE_KEY_HEX: ${{ secrets.PROJECTAG_NATIVE_SIGNING_KEY_HEX }}
         run: |
           set -euo pipefail
           echo "runner cores: $(nproc)"
           # The client test gates open windows under a virtual display.
-          xvfb-run -a cargo agx ci build gates --shard "${{ matrix.shard }}" --out "$RUNNER_TEMP/package" --run-url "$RUN_URL"
+          bash .github/scripts/with-native-signing-key.sh xvfb-run -a cargo agx ci build gates --shard "${{ matrix.shard }}" --out "$RUNNER_TEMP/package" --run-url "$RUN_URL"
           ls -l "$RUNNER_TEMP/package"
 
       - name: Upload the sealed gate shard
@@ -238,13 +241,16 @@ jobs:
       - name: Build and seal the ${{ matrix.kind }} package
         env:
           AGX_CI_PACKAGE_KEY: ${{ secrets.AGX_CI_PACKAGE_KEY }}
+          # Only this step sees the native key (not the mingw or NDK installs
+          # above); the script writes it for the one command and deletes it.
+          NATIVE_KEY_HEX: ${{ secrets.PROJECTAG_NATIVE_SIGNING_KEY_HEX }}
         run: |
           set -euo pipefail
           # The ios kind builds with code signing disabled: this job holds no
           # Apple identity or provisioning. `cargo agx deploy --from-ci
           # <commit> ios` signs and exports the archive on the operator's Mac.
           if [ "${{ matrix.kind }}" = ios ]; then xcodebuild -version; fi
-          cargo agx ci build "${{ matrix.kind }}" --out "$RUNNER_TEMP/package" --run-url "$RUN_URL"
+          bash .github/scripts/with-native-signing-key.sh cargo agx ci build "${{ matrix.kind }}" --out "$RUNNER_TEMP/package" --run-url "$RUN_URL"
           ls -l "$RUNNER_TEMP/package"
 
       - name: Upload the sealed package
