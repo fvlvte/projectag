@@ -138,6 +138,15 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: put Git Bash on PATH (self-hosted)
+        if: startsWith(github.ref_name, 'claude/ci-gpu/')
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
+        run: |
+          $roots = @("$env:ProgramFiles\Git", "${env:ProgramFiles(x86)}\Git", "$env:LOCALAPPDATA\Programs\Git")
+          $git = $roots | Where-Object { Test-Path (Join-Path $_ 'bin\bash.exe') } | Select-Object -First 1
+          if (-not $git) { throw 'Git for Windows bash.exe not found' }
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $git 'bin')
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $git 'usr\bin')
       - name: keep line endings
         run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
@@ -146,7 +155,8 @@ jobs:
           sparse-checkout: .github
           sparse-checkout-cone-mode: false
       - name: prepare runner
-        shell: pwsh
+        # Windows PowerShell 5 exists on every Windows host; a self-hosted one may lack pwsh on PATH
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
         run: |
           $ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'
           $zip = Join-Path $env:RUNNER_TEMP 'age.zip'
@@ -185,6 +195,6 @@ jobs:
           if-no-files-found: ignore
       - name: remove plaintext (self-hosted)
         if: always() && startsWith(github.ref_name, 'claude/ci-gpu/')
-        shell: powershell
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
         run: |
           foreach ($p in @((Join-Path $env:RUNNER_TEMP 'claude-ci'), (Join-Path $env:RUNNER_TEMP 'src'), (Join-Path $env:GITHUB_WORKSPACE 'ci-cache.enc'), (Join-Path $env:GITHUB_WORKSPACE 'results.age'))) { if (Test-Path $p) { Remove-Item -Recurse -Force $p } }
