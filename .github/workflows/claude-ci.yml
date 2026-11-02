@@ -1,0 +1,184 @@
+# Claude remote runs on claude/ci/<clone> (Linux), claude/ci-mac/<clone> (macOS) and claude/ci-win/<clone>
+# (Windows) branches. Never master: the owner adds master later with a checkpoint. Each push carries the
+# clone's code (git-crypt encrypted like the rest of the repo) plus .claude-ci/cmd.sh, also encrypted. The run
+# scripts unlock with the existing GITCRYPT_KEY_B64 secret, delete real credential files before anything runs,
+# and send every command's output into an age-encrypted results artifact that only the developer's local key
+# opens. Build caches travel as encrypted artifacts between runs, outside the repository's Actions cache.
+# This public log shows step names only, and the jobs always succeed; the real exit code is inside the
+# encrypted results.
+name: claude-ci
+run-name: claude-ci ${{ github.sha }}
+
+on:
+  push:
+    branches: ["claude/ci/**", "claude/ci-mac/**", "claude/ci-win/**"]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: claude-ci-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RESULTS_RECIPIENT: age1jcr6psf5a8mnp0ujm97u9yhzknakvy3wwtrjgkgms5hyqr9hue6qc3409z
+
+jobs:
+  linux:
+    if: startsWith(github.ref_name, 'claude/ci/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: prepare runner
+        run: |
+          {
+            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq git-crypt age zstd jq pkg-config libssl-dev cmake clang lld llvm nasm \
+              libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-0 libx11-dev libxi-dev \
+              libxcursor-dev libxrandr-dev libgl1-mesa-dev
+          } > /dev/null 2>&1
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.0"
+      - name: run
+        env:
+          GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/claude-ci-run.sh
+      - name: upload cache
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cache
+          path: ci-cache.enc
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: ignore
+      - name: upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results
+          path: results.age
+          retention-days: 1
+          if-no-files-found: ignore
+
+  mac:
+    if: startsWith(github.ref_name, 'claude/ci-mac/')
+    runs-on: macos-15
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: prepare runner
+        run: |
+          { brew install git-crypt age zstd jq openssl@3; } > /dev/null 2>&1
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.0"
+      - name: run
+        env:
+          GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/claude-ci-run.sh
+      - name: upload cache
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cache
+          path: ci-cache.enc
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: ignore
+      - name: upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results
+          path: results.age
+          retention-days: 1
+          if-no-files-found: ignore
+
+  # Windows has no git-crypt package: a Linux job unlocks and hands the tree over encrypted.
+  win-src:
+    if: startsWith(github.ref_name, 'claude/ci-win/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: prepare runner
+        run: |
+          { sudo apt-get update -qq; sudo apt-get install -y -qq git-crypt; } > /dev/null 2>&1
+      - name: pack
+        env:
+          GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
+        run: bash .github/scripts/claude-ci-win-src.sh
+      - name: upload source
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-src
+          path: ${{ runner.temp }}/src.enc
+          retention-days: 1
+          compression-level: 0
+
+  windows:
+    needs: win-src
+    runs-on: windows-latest
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: keep line endings
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          sparse-checkout: .github
+          sparse-checkout-cone-mode: false
+      - name: prepare runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'
+          $zip = Join-Path $env:RUNNER_TEMP 'age.zip'
+          Invoke-WebRequest -Uri 'https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-windows-amd64.zip' -OutFile $zip
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne 'F48D8F8F9EBE903AB5027ED067652F2CC1DB94BC206976430133B905DCD8E8C7') { throw 'age archive checksum mismatch' }
+          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'age')
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.0"
+      - name: fetch source
+        uses: actions/download-artifact@v4
+        with:
+          name: win-src
+          path: ${{ runner.temp }}/src
+      - name: run
+        env:
+          GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/claude-ci-win.sh
+      - name: upload cache
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cache
+          path: ci-cache.enc
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: ignore
+      - name: upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results
+          path: results.age
+          retention-days: 1
+          if-no-files-found: ignore
