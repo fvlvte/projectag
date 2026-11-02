@@ -30,10 +30,16 @@ git config filter.git-crypt.clean '"git-crypt" clean'
 git config filter.git-crypt.required true
 
 key="$COMMON/git-crypt/keys/default"
-umask 077
-printf %s "$GITCRYPT_KEY_B64" | python3 -c 'import sys,base64; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))' > "$key"
-chmod 600 "$key"
+# Only the key is private. A umask left at 077 for the checkout below made
+# every decrypted file 0600, and images built from it could not read their
+# own files as the service user (2026-11-02, release 0.4.219 migrator).
+(
+  umask 077
+  printf %s "$GITCRYPT_KEY_B64" | python3 -c 'import sys,base64; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))' > "$key"
+  chmod 600 "$key"
+)
 
+umask 022
 git ls-files -z | xargs -0 rm -f
 git checkout -f HEAD
 
@@ -45,6 +51,10 @@ if not p.is_file():
 start = p.read_bytes()[:24]
 if not start.startswith(b"#"):
     raise SystemExit("unlock failed: AGENTS.md is still ciphertext")
+for rel in ("AGENTS.md", "backend/migrations"):
+    mode = Path(rel).stat().st_mode
+    if not mode & 0o004:
+        raise SystemExit(f"unlock failed: {rel} is not world-readable (mode {mode & 0o777:o}); check the umask")
 print("git-crypt: worktree is plaintext")
 PY
 
