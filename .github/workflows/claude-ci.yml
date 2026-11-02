@@ -185,6 +185,6 @@ jobs:
           if-no-files-found: ignore
       - name: remove plaintext (self-hosted)
         if: always() && startsWith(github.ref_name, 'claude/ci-gpu/')
-        shell: pwsh
+        shell: powershell
         run: |
           foreach ($p in @((Join-Path $env:RUNNER_TEMP 'claude-ci'), (Join-Path $env:RUNNER_TEMP 'src'), (Join-Path $env:GITHUB_WORKSPACE 'ci-cache.enc'), (Join-Path $env:GITHUB_WORKSPACE 'results.age'))) { if (Test-Path $p) { Remove-Item -Recurse -Force $p } }
