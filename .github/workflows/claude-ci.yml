@@ -11,7 +11,7 @@ run-name: claude-ci ${{ github.sha }}
 
 on:
   push:
-    branches: ["claude/ci/**", "claude/ci-mac/**", "claude/ci-win/**"]
+    branches: ["claude/ci/**", "claude/ci-mac/**", "claude/ci-win/**", "claude/ci-gpu/**"]
 
 permissions:
   contents: read
@@ -107,7 +107,7 @@ jobs:
 
   # Windows has no git-crypt package: a Linux job unlocks and hands the tree over encrypted.
   win-src:
-    if: startsWith(github.ref_name, 'claude/ci-win/')
+    if: startsWith(github.ref_name, 'claude/ci-win/') || startsWith(github.ref_name, 'claude/ci-gpu/')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -131,7 +131,8 @@ jobs:
 
   windows:
     needs: win-src
-    runs-on: windows-latest
+    # claude/ci-gpu/ runs on the owner's self-hosted RTX machine; it may be offline, so a run can queue.
+    runs-on: ${{ startsWith(github.ref_name, 'claude/ci-gpu/') && fromJSON('["self-hosted","Windows","heavy-gpu"]') || 'windows-latest' }}
     timeout-minutes: 240
     defaults:
       run:
@@ -182,3 +183,8 @@ jobs:
           path: results.age
           retention-days: 1
           if-no-files-found: ignore
+      - name: remove plaintext (self-hosted)
+        if: always() && startsWith(github.ref_name, 'claude/ci-gpu/')
+        shell: powershell
+        run: |
+          foreach ($p in @((Join-Path $env:RUNNER_TEMP 'claude-ci'), (Join-Path $env:RUNNER_TEMP 'src'), (Join-Path $env:GITHUB_WORKSPACE 'ci-cache.enc'), (Join-Path $env:GITHUB_WORKSPACE 'results.age'))) { if (Test-Path $p) { Remove-Item -Recurse -Force $p } }
