@@ -242,7 +242,8 @@ jobs:
           exit "$status"
       - name: Python script tests
         env:
-          # qa-hosted-client.py and its tests refuse to start without TMPDIR; runners leave it unset.
+          # The hosted fixture, hosted editor, building-asset and firepit tests refuse to
+          # run without an existing TMPDIR (no storage fallback); runners leave it unset.
           TMPDIR: ${{ runner.temp }}
         run: |
           python3 scripts/test_check_docs.py
