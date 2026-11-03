@@ -224,6 +224,22 @@ jobs:
           done
           rm -f "$RUNNER_TEMP/node-test.log"
           exit "$status"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - name: Website build and tests
+        run: |
+          set -o pipefail
+          # Build and test output can quote decrypted source; this log is
+          # public. Print only the step result and the test counts.
+          cd website
+          npm ci --ignore-scripts --no-audit --no-fund > "$RUNNER_TEMP/website.log" 2>&1 || { echo "npm ci failed"; exit 1; }
+          npm run build >> "$RUNNER_TEMP/website.log" 2>&1 || { echo "website build failed"; exit 1; }
+          status=0
+          npm test > "$RUNNER_TEMP/website-test.log" 2>&1 || status=1
+          grep -E '^(not ok|# (tests|pass|fail|cancelled))|^ℹ (tests|pass|fail)' "$RUNNER_TEMP/website-test.log" || true
+          rm -f "$RUNNER_TEMP/website.log" "$RUNNER_TEMP/website-test.log"
+          exit "$status"
       - name: Python script tests
         env:
           # qa-hosted-client.py and its tests refuse to start without TMPDIR; runners leave it unset.
