@@ -644,6 +644,29 @@ jobs:
             --id backend.projectag-publication-database \
             --id backend.projectag-shores-migration \
             --id backend.projectag-authority-lifecycle
+      - name: Corpse linger driver assertions
+        timeout-minutes: 15
+        # combat.corpse-linger itself retains its macOS admission/resource guards.
+        # These portable driver tests do not establish the authenticated journey.
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/qa-backend/corpse-linger"
+          cargo test --locked --manifest-path backend/Cargo.toml -p projectag-service \
+            --example corpse-linger-journey -- --nocapture \
+            2>&1 | tee "$RUNNER_TEMP/qa-backend/corpse-linger/driver-tests.log"
+          python3 - "$RUNNER_TEMP/qa-backend/corpse-linger/driver-tests.log" <<'PYTEST'
+          import pathlib, re, sys
+          log = pathlib.Path(sys.argv[1]).read_text()
+          required = {
+              "corpse_watch_requires_a_listed_gap_before_respawn",
+              "a_corpse_listed_beside_a_living_id_is_rejected",
+              "arena_file_owns_entity_and_tiles_and_rejects_contract_drift",
+          }
+          passed = set(re.findall(r"^test tests::(\w+) \.\.\. ok$", log, re.MULTILINE))
+          missing = required - passed
+          if missing:
+              sys.exit("Required corpse driver assertions did not pass: " + ", ".join(sorted(missing)))
+          PYTEST
       - name: Upload backend evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
@@ -767,7 +790,7 @@ jobs:
           export TMPDIR="$RUNNER_TEMP"
           cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json \
             --output "$RUNNER_TEMP/qa-client" \
-            harness.selftest.click-roundtrip windows.bag.open-close windows.spellbook-icon chat.input.focus-type windows.creator-female-appearance windows.creator-female-armor windows.creator-female-compact windows.creator-female-short windows.creator-female-customization windows.creator-body-switch windows.creator-color-input windows.patchnotes-desktop windows.patchnotes-compact windows.patchnotes-short recovery.update-handoff-desktop recovery.update-handoff-compact recovery.update-handoff-short recovery.maintenance-notice-desktop recovery.maintenance-notice-compact recovery.maintenance-notice-short movement.creator-female-walk movement.hosted-animation-manifest \
+            harness.selftest.click-roundtrip windows.bag.open-close windows.spellbook-icon chat.input.focus-type windows.creator-female-appearance windows.creator-female-armor windows.creator-female-compact windows.creator-female-short windows.creator-female-customization windows.creator-body-switch windows.creator-color-input windows.patchnotes-desktop windows.patchnotes-compact windows.patchnotes-short recovery.update-handoff-desktop recovery.update-handoff-compact recovery.update-handoff-short recovery.maintenance-notice-desktop recovery.maintenance-notice-compact recovery.maintenance-notice-short movement.creator-female-walk movement.hosted-animation-manifest combat.target-frame-desktop combat.target-frame-compact \
             | tee "$RUNNER_TEMP/qa-client-run.json"
       - name: Fixture PNG suites
         id: fixtures
