@@ -773,6 +773,8 @@ jobs:
           grep -Ei 'llvmpipe|lavapipe' "$RUNNER_TEMP/vulkaninfo-summary.txt"
       - name: QA doctor
         run: cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa doctor --json
+      - name: Hosted map through real Caddy
+        run: python3 scripts/test-hosted-map-caddy.py
       - name: Build isolated hosted fixture services
         # Keep these available when the scenario runner reuses a client via
         # --no-build; the fixture never connects to another developer server.
