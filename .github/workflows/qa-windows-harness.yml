@@ -257,6 +257,12 @@ jobs:
     # Job-level condition prevents offline runner allocation when disabled.
     if: ${{ vars.GPU_RUNNER_AVAILABLE == 'true' || (github.event_name == 'workflow_dispatch' && inputs.full_gpu) }}
     runs-on: [self-hosted, Windows, heavy-gpu]
+    # One runner and about an hour per run: keep the running job and only the newest
+    # waiting push, so pushes cannot queue up ahead of other work. Manual runs have
+    # their own group, so a push never replaces evidence someone asked for.
+    concurrency:
+      group: qa-windows-gpu-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'push' }}
+      cancel-in-progress: false
     timeout-minutes: 90
     steps:
       - name: Download private QA pack
