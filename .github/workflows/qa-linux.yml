@@ -283,6 +283,7 @@ jobs:
           python3 -W error scripts/test_emberdawn_heightfield.py
           python3 -W error scripts/test_emberdawn_atmosphere.py
           python3 -W error scripts/test_shores_creatures.py
+          python3 -B -W error -m unittest discover -s scripts/tests -p 'test_monster_collision.py'
           python3 -W error scripts/test_client_performance.py
           python3 -W error scripts/test_metal_gpu_spans.py
           python3 -W error backend/scripts/test-log-collector.py
