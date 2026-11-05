@@ -2,7 +2,7 @@
 # qa-harness executable or QA pack to R2 / GitHub Releases. It runs when the
 # `qa-windows` label is added and on every later push to a labelled PR, so the
 # Paperclip QA gate (job report-paperclip) always has a run for the PR head.
-# It also runs on every master commit; `cargo agx deploy --from-ci` requires
+# Hosted smoke also runs on every master commit; `cargo agx deploy --from-ci` requires
 # that run to be green.
 name: qa-windows-harness
 run-name: ${{ github.event.inputs.pr_number && format('pr_number={0}', github.event.inputs.pr_number) || github.event.pull_request.title || github.workflow }}
@@ -17,6 +17,11 @@ on:
         required: false
         default: ""
         type: string
+      full_gpu:
+        description: Run full suite (enable only while the GPU runner is online)
+        required: false
+        default: false
+        type: boolean
   pull_request:
     types: [labeled, synchronize]
 
@@ -30,6 +35,10 @@ permissions:
   pull-requests: read
   actions: read
 
+# Enable scheduled GPU allocation only while SHADOW-8PBBGGEQ is online:
+# gh variable set GPU_RUNNER_AVAILABLE --body true
+# gh variable set GPU_RUNNER_AVAILABLE --body false
+# workflow_dispatch full_gpu=true explicitly requests the full suite as well.
 jobs:
   build-qa-pack:
     if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.label.name == 'qa-windows' || (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'qa-windows')) }}
@@ -155,8 +164,100 @@ jobs:
 
   run-qa:
     needs: build-qa-pack
+    # Hosted software-rendering smoke: logic/UI plus known product assertions.
+    # --require-execution fails product errors; pending visual receipts stay blocked.
     runs-on: windows-latest
     timeout-minutes: 45
+    steps:
+      - name: Download private QA pack
+        uses: actions/download-artifact@v8
+        with:
+          name: projectag-qa-windows-pack
+          path: ${{ runner.temp }}/qa-download
+
+      - name: Expand private QA pack
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $zip = Join-Path $env:RUNNER_TEMP "qa-download\projectag-qa-windows.zip"
+          $expanded = Join-Path $env:RUNNER_TEMP "qa-expanded"
+          Expand-Archive -LiteralPath $zip -DestinationPath $expanded -Force
+          if (!(Test-Path -LiteralPath (Join-Path $expanded "projectag-qa-windows\pack.json"))) {
+            throw "invalid QA pack"
+          }
+
+      - name: Install DirectX Shader Compiler
+        shell: pwsh
+        run: |
+          $pack = Join-Path $env:RUNNER_TEMP "qa-expanded\projectag-qa-windows"
+          Invoke-WebRequest -Uri https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.8.2505/dxc_2025_05_24.zip -OutFile dxc.zip
+          Expand-Archive dxc.zip -DestinationPath dxc
+          Copy-Item dxc/bin/x64/dxc.exe $pack
+          Copy-Item dxc/bin/x64/dxcompiler.dll $pack
+          Copy-Item dxc/bin/x64/dxil.dll $pack
+
+      - name: Rust compiler for disposable updater fixtures
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+
+      - name: Windows updater process and HTTP integration
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pack = Join-Path $env:RUNNER_TEMP "qa-expanded\projectag-qa-windows"
+          $results = Join-Path $env:RUNNER_TEMP "qa-windows-results"
+          New-Item -ItemType Directory -Force -Path $results | Out-Null
+          python (Join-Path $pack "scripts\test-desktop-updater.py") --launcher (Join-Path $pack "start.exe") --output (Join-Path $results "desktop-updater-runtime.json")
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run Windows updater packed-store tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pack = Join-Path $env:RUNNER_TEMP "qa-expanded\projectag-qa-windows"
+          $results = Join-Path $env:RUNNER_TEMP "qa-windows-results"
+          New-Item -ItemType Directory -Force -Path $results | Out-Null
+          & (Join-Path $pack "updater-tests.exe") patch::packed::tests:: --test-threads=1 --nocapture |
+            Tee-Object -FilePath (Join-Path $results "updater-lib-tests.log")
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run Windows client harness
+        id: qa
+        shell: pwsh
+        env:
+          WGPU_BACKEND: dx12
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pack = Join-Path $env:RUNNER_TEMP "qa-expanded\projectag-qa-windows"
+          $evidence = Join-Path $env:RUNNER_TEMP "qa-windows-results"
+          $results = Join-Path $evidence "client"
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+          Add-Type -AssemblyName System.Windows.Forms
+          $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
+          [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point([int]($screen.Width / 2), [int]($screen.Height / 2))
+          Set-Location $pack
+          & (Join-Path $pack "agx.exe") qa run --pack . --output $results --driver harness --ready-timeout 240 --require-execution --json `
+            harness.selftest.click-roundtrip windows.bag.open-close windows.spellbook-icon chat.input.focus-type windows.creator-female-appearance windows.patchnotes-desktop recovery.update-handoff-desktop recovery.maintenance-notice-desktop `
+            | Tee-Object -FilePath (Join-Path $evidence "qa-run.json")
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload QA evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: projectag-qa-windows-evidence
+          path: |
+            ${{ runner.temp }}/qa-windows-results/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  run-qa-gpu:
+    needs: build-qa-pack
+    # Job-level condition prevents offline runner allocation when disabled.
+    if: ${{ vars.GPU_RUNNER_AVAILABLE == 'true' || (github.event_name == 'workflow_dispatch' && inputs.full_gpu) }}
+    runs-on: [self-hosted, Windows, heavy-gpu]
+    timeout-minutes: 90
     steps:
       - name: Download private QA pack
         uses: actions/download-artifact@v8
@@ -235,14 +336,14 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
-          name: projectag-qa-windows-evidence
+          name: projectag-qa-windows-gpu-evidence
           path: |
             ${{ runner.temp }}/qa-windows-results/**
           if-no-files-found: warn
           retention-days: 14
 
   report-paperclip:
-    needs: [build-qa-pack, run-qa]
+    needs: [build-qa-pack, run-qa, run-qa-gpu]
     # Runs even when the pack build failed (skipped run-qa): the gate comment
     # must name a failed build, not stay silent.
     if: ${{ always() && needs.build-qa-pack.result != 'skipped' && github.event_name != 'push' }}
@@ -255,9 +356,9 @@ jobs:
       PAPERCLIP_FALLBACK_ISSUE_ID: ${{ secrets.PAPERCLIP_WINDOWS_ISSUE_ID }}
       PAPERCLIP_QA_WORKFLOW: qa-windows-harness
       PAPERCLIP_QA_ARTIFACT: projectag-qa-windows-evidence
-      PAPERCLIP_QA_REQUIRED_ARTIFACTS: projectag-qa-windows-evidence
-      PAPERCLIP_QA_RESULT: ${{ needs.run-qa.result == 'success' && 'success' || 'failure' }}
-      PAPERCLIP_QA_JOBS: build-qa-pack=${{ needs.build-qa-pack.result }} run-qa=${{ needs.run-qa.result }}
+      PAPERCLIP_QA_REQUIRED_ARTIFACTS: projectag-qa-windows-evidence ${{ needs.run-qa-gpu.result != 'skipped' && 'projectag-qa-windows-gpu-evidence' || '' }}
+      PAPERCLIP_QA_RESULT: ${{ needs.run-qa.result == 'success' && (needs.run-qa-gpu.result == 'success' || needs.run-qa-gpu.result == 'skipped') && 'success' || 'failure' }}
+      PAPERCLIP_QA_JOBS: build-qa-pack=${{ needs.build-qa-pack.result }} run-qa=${{ needs.run-qa.result }} run-qa-gpu=${{ needs.run-qa-gpu.result }}
       PAPERCLIP_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       PAPERCLIP_PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
       GH_TOKEN: ${{ github.token }}
@@ -274,7 +375,15 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: projectag-qa-windows-evidence
-          path: qa-evidence
+          path: qa-evidence/projectag-qa-windows-evidence
+
+      - name: Download GPU QA evidence
+        if: ${{ needs.run-qa-gpu.result != 'skipped' }}
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: projectag-qa-windows-gpu-evidence
+          path: qa-evidence/projectag-qa-windows-gpu-evidence
 
       - name: Post the QA gate and evidence summary
         if: ${{ env.PAPERCLIP_API_KEY != '' }}
