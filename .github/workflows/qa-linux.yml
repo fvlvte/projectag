@@ -1,7 +1,8 @@
 # Linux QA gate for pull requests and every master commit: static checks, core
 # and backend tests, and a software-adapter client harness. On master each push
 # runs every job (no path filter, no cancellation) and the `master gate` job is
-# the single pass/fail check that `cargo agx deploy --from-ci` requires. Job `report` posts one `QA gate` comment per
+# its single pass/fail result. It does not block `cargo agx deploy --from-ci`,
+# which requires a green master-packages run. Job `report` posts one `QA gate` comment per
 # run to the Paperclip issue named by the branch and, when every required run
 # is green and the issue carries `awaiting-ci`, advances it to its review
 # stages (.github/scripts/upload-paperclip-qa-summary.sh). No agent is woken
@@ -831,6 +832,88 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  client-surfaces:
+    # The two longest window and spell journeys. They add 40 minutes on the
+    # software adapter, which the client job's limit has no room for.
+    name: client surfaces (software adapter, RPG windows and Spellbook)
+    needs: changes
+    if: ${{ needs.changes.outputs.client == 'true' || github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
+      WGPU_BACKEND: vulkan
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      PROJECTAG_QA_BACKGROUND: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Free disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: Install build dependencies, xvfb and Mesa
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-crypt pkg-config libssl-dev cmake clang lld llvm nasm \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-0 \
+            libx11-dev libxi-dev \
+            libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev libvulkan-dev \
+            xvfb mesa-vulkan-drivers libvulkan1 libgl1-mesa-dri vulkan-tools
+          ldconfig -p | grep -F libxkbcommon-x11.so.0
+          ICD="$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -1)"
+          test -f "$ICD"
+          echo "VK_ICD_FILENAMES=$ICD" >> "$GITHUB_ENV"
+          echo "VK_DRIVER_FILES=$ICD" >> "$GITHUB_ENV"
+      - name: Unlock git-crypt
+        run: |
+          test -n "${GITCRYPT_KEY_B64}" || { echo "Add repository secret GITCRYPT_KEY_B64"; exit 1; }
+          bash .github/scripts/git-crypt-unlock.sh
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+      - uses: Swatinem/rust-cache@v2
+        continue-on-error: true
+        with:
+          workspaces: |
+            . -> target
+            tools/agx -> target
+          prefix-key: qa-linux-surfaces
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Software Vulkan adapter present
+        run: |
+          xvfb-run -a vulkaninfo --summary > "$RUNNER_TEMP/vulkaninfo-summary.txt"
+          grep -Ei 'llvmpipe|lavapipe' "$RUNNER_TEMP/vulkaninfo-summary.txt"
+      - name: Client surface scenarios
+        run: |
+          set -euo pipefail
+          export TMPDIR="$RUNNER_TEMP"
+          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json \
+            --output "$RUNNER_TEMP/qa-surfaces" \
+            windows.rpg-surfaces combat.spellbook-actions \
+            | tee "$RUNNER_TEMP/qa-surfaces-run.json"
+      - name: Stage public surface evidence
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/qa-surfaces-public"
+          rm -rf "$stage"
+          mkdir -p "$stage"
+          if [ -d "$RUNNER_TEMP/qa-surfaces" ]; then
+            (cd "$RUNNER_TEMP/qa-surfaces" && find . -type f -links 1 \
+              ! -ipath '*/data/*' ! -iname 'fixture.json' -print0 \
+              | cpio --null --pass-through --make-directories --quiet "$stage")
+          fi
+      - name: Upload surface evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: projectag-qa-surfaces-evidence
+          path: ${{ runner.temp }}/qa-surfaces-public/**
+          if-no-files-found: warn
+          retention-days: 14
+
   windows-owned-files:
     name: Windows plaintext owner tests
     needs: changes
@@ -944,10 +1027,10 @@ jobs:
         run: bash mobile/ios/voice-io-race/run.sh
 
   master-gate:
-    # One required result per master commit; agx refuses to deploy a CI
-    # package whose commit lacks a green gate.
+    # One result per master commit, which `agx ci status` and the CI watcher
+    # read. A deploy requires master-packages instead (github::require_green).
     name: master gate
-    needs: [changes, static, core, backend, client, windows-owned-files, ios-voice-io-race, api-gateway-live-spacing]
+    needs: [changes, static, core, backend, client, client-surfaces, windows-owned-files, ios-voice-io-race, api-gateway-live-spacing]
     if: ${{ always() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
