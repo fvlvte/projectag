@@ -280,6 +280,7 @@ jobs:
           python3 backend/scripts/test_web_receipt_runner.py
           python3 backend/scripts/test-qa-hosted-client.py
           python3 backend/scripts/test_qa_hosted_editor.py
+          python3 backend/scripts/test_qa_hosted_world_editor.py
           python3 backend/scripts/test_hosted_child_restart.py
           python3 backend/scripts/test_public_boss_e2e.py
           python3 -W error scripts/test_directional_shadow_cascades.py
