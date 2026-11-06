@@ -166,8 +166,10 @@ jobs:
     needs: build-qa-pack
     # Hosted software-rendering smoke: logic/UI plus known product assertions.
     # --require-execution fails product errors; pending visual receipts stay blocked.
+    # The software adapter can't resize a presented window, so this list only
+    # uses sizes set at window creation. It also takes seconds per frame.
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - name: Download private QA pack
         uses: actions/download-artifact@v8
@@ -238,7 +240,7 @@ jobs:
           [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point([int]($screen.Width / 2), [int]($screen.Height / 2))
           Set-Location $pack
           & (Join-Path $pack "agx.exe") qa run --pack . --output $results --driver harness --ready-timeout 240 --require-execution --json `
-            harness.selftest.click-roundtrip windows.bag.open-close windows.spellbook-icon chat.input.focus-type windows.creator-female-appearance windows.patchnotes-desktop recovery.update-handoff-desktop recovery.maintenance-notice-desktop `
+            harness.selftest.click-roundtrip windows.bag-open-desktop windows.bag-open-compact windows.spellbook-icon-desktop windows.spellbook-icon-compact chat.input.focus-type windows.creator-female-desktop windows.patchnotes-desktop recovery.update-handoff-desktop recovery.maintenance-notice-desktop `
             | Tee-Object -FilePath (Join-Path $evidence "qa-run.json")
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
