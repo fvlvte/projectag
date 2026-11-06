@@ -3,7 +3,8 @@
 # one job per platform package (`package`). Each job runs
 # `cargo agx ci build <kind>`: the same agx compile or gate function a local
 # release runs, under the commit-derived version (MAJOR.MINOR as committed,
-# BUILD = first-parent commit count) and store counter. The `ios` job builds
+# BUILD = first-parent count minus committed FAMILY_BASE) and store counter.
+# The `ios` job builds
 # the iOS device archive unsigned; signing stays on the operator Mac.
 # Outputs are sealed with AGX_CI_PACKAGE_KEY before upload: this repository is public, so its
 # artifacts are readable by anyone. `cargo agx deploy --from-ci <commit>`
@@ -84,8 +85,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # The build number is the first-parent commit count: full commit
-          # history, trees fetched on demand.
+          # Build and store derivation require full first-parent history;
+          # trees are fetched on demand.
           fetch-depth: 0
           filter: tree:0
           persist-credentials: false
@@ -186,8 +187,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # The build number is the first-parent commit count: full commit
-          # history, trees fetched on demand.
+          # Build and store derivation require full first-parent history;
+          # trees are fetched on demand.
           fetch-depth: 0
           filter: tree:0
           persist-credentials: false
