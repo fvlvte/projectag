@@ -286,11 +286,22 @@ jobs:
         shell: pwsh
         run: |
           $pack = Join-Path $env:RUNNER_TEMP "qa-expanded\projectag-qa-windows"
+          # This runner keeps its workspace between runs, so the archive's files may already exist.
           Invoke-WebRequest -Uri https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.8.2505/dxc_2025_05_24.zip -OutFile dxc.zip
-          Expand-Archive dxc.zip -DestinationPath dxc
-          Copy-Item dxc/bin/x64/dxc.exe $pack
-          Copy-Item dxc/bin/x64/dxcompiler.dll $pack
-          Copy-Item dxc/bin/x64/dxil.dll $pack
+          Expand-Archive dxc.zip -DestinationPath dxc -Force
+          Copy-Item dxc/bin/x64/dxc.exe $pack -Force
+          Copy-Item dxc/bin/x64/dxcompiler.dll $pack -Force
+          Copy-Item dxc/bin/x64/dxil.dll $pack -Force
+
+      - name: Git Bash on PATH for the toolchain action
+        # dtolnay/rust-toolchain runs through `bash`, which this runner doesn't have on PATH.
+        shell: pwsh
+        run: |
+          $roots = @("$env:ProgramFiles\Git", "${env:ProgramFiles(x86)}\Git", "$env:LOCALAPPDATA\Programs\Git")
+          $git = $roots | Where-Object { Test-Path (Join-Path $_ 'bin\bash.exe') } | Select-Object -First 1
+          if (-not $git) { throw 'Git for Windows bash.exe not found' }
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $git 'bin')
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $git 'usr\bin')
 
       - name: Rust compiler for disposable updater fixtures
         uses: dtolnay/rust-toolchain@master
