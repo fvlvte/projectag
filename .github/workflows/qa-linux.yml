@@ -212,6 +212,8 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/zip-crypto"
           "$RUNNER_TEMP/zip-crypto/bin/pip" install pyzipper==0.4.0
           "$RUNNER_TEMP/zip-crypto/bin/python" scripts/test_standalone_zip_crypto.py
+      - name: Pinned DXC staging and Windows packaging contracts
+        run: python3 -B -W error scripts/tests/test_dxc_runtime.py
       - name: Node source contracts
         run: |
           set -o pipefail

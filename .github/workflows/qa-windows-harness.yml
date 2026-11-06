@@ -169,7 +169,7 @@ jobs:
     # The software adapter can't resize a presented window, so this list only
     # uses sizes set at window creation. It also takes seconds per frame.
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 180
     steps:
       - name: Download private QA pack
         uses: actions/download-artifact@v8
@@ -192,11 +192,9 @@ jobs:
         shell: pwsh
         run: |
           $pack = Join-Path $env:RUNNER_TEMP "qa-expanded\projectag-qa-windows"
-          Invoke-WebRequest -Uri https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.8.2505/dxc_2025_05_24.zip -OutFile dxc.zip
-          Expand-Archive dxc.zip -DestinationPath dxc
-          Copy-Item dxc/bin/x64/dxc.exe $pack
-          Copy-Item dxc/bin/x64/dxcompiler.dll $pack
-          Copy-Item dxc/bin/x64/dxil.dll $pack
+          # The pack helper verifies the pinned archive and each DLL before staging.
+          python (Join-Path $pack "scripts\stage-dxc-runtime.py") $pack
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Rust compiler for disposable updater fixtures
         uses: dtolnay/rust-toolchain@master
@@ -224,6 +222,18 @@ jobs:
             Tee-Object -FilePath (Join-Path $results "updater-lib-tests.log")
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: DX12 pinned runtime and FXC world-entry regressions
+        shell: pwsh
+        env:
+          WGPU_BACKEND: dx12
+        run: |
+          $ErrorActionPreference = "Stop"
+          Remove-Item Env:WGPU_DX12_COMPILER -ErrorAction SilentlyContinue
+          $pack = Join-Path $env:RUNNER_TEMP "qa-expanded\projectag-qa-windows"
+          $results = Join-Path $env:RUNNER_TEMP "qa-windows-results\compiler"
+          python (Join-Path $pack "scripts\test-dx12-compiler.py") --pack $pack --output $results
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Run Windows client harness
         id: qa
         shell: pwsh
@@ -240,7 +250,7 @@ jobs:
           [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point([int]($screen.Width / 2), [int]($screen.Height / 2))
           Set-Location $pack
           & (Join-Path $pack "agx.exe") qa run --pack . --output $results --driver harness --ready-timeout 240 --require-execution --json `
-            harness.selftest.click-roundtrip windows.bag.open-close windows.bag-open-compact windows.spellbook-icon windows.minimize-restore chat.input.focus-type windows.creator-female-desktop windows.patchnotes-desktop recovery.update-handoff-desktop recovery.maintenance-notice-desktop `
+            harness.selftest.click-roundtrip windows.bag.open-close windows.bag-open-compact windows.spellbook-icon windows.minimize-restore chat.input.focus-type windows.creator-female-desktop windows.patchnotes-desktop recovery.update-handoff-desktop recovery.maintenance-notice-desktop harness.dx12-world-entry `
             | Tee-Object -FilePath (Join-Path $evidence "qa-run.json")
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -288,12 +298,9 @@ jobs:
         shell: pwsh
         run: |
           $pack = Join-Path $env:RUNNER_TEMP "qa-expanded\projectag-qa-windows"
-          # This runner keeps its workspace between runs, so the archive's files may already exist.
-          Invoke-WebRequest -Uri https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.8.2505/dxc_2025_05_24.zip -OutFile dxc.zip
-          Expand-Archive dxc.zip -DestinationPath dxc -Force
-          Copy-Item dxc/bin/x64/dxc.exe $pack -Force
-          Copy-Item dxc/bin/x64/dxcompiler.dll $pack -Force
-          Copy-Item dxc/bin/x64/dxil.dll $pack -Force
+          # The pack helper verifies the pinned archive and each DLL before staging.
+          python (Join-Path $pack "scripts\stage-dxc-runtime.py") $pack
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Git Bash on PATH for the toolchain action
         # dtolnay/rust-toolchain runs through `bash`, which this runner doesn't have on PATH.
