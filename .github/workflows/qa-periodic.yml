@@ -1,0 +1,372 @@
+# The periodic QA tier: ready scenarios too slow or too far from an everyday
+# change to run on every push. It runs on a schedule between releases, never on
+# a push or a pull request. It does not block a deploy: `cargo agx deploy
+# --from-ci` reads only master-packages. A failure reaches people through the
+# red run, one open issue while the sweep is red, and `cargo agx ci status`.
+# qa/homes.toml assigns the scenarios to shards; static.qa-homes keeps it, this
+# file's matrices and the scenario catalogue in step. Policy:
+# docs/development/testing.md. `.github/**` is git-crypt-exempt, so GitHub can
+# read this file; the scenario lists stay in the encrypted manifest.
+name: qa-periodic
+
+on:
+  schedule:
+    # Daily, in the quietest hour of the last weeks' pushes. See the cadence
+    # note in docs/development/testing.md before changing it.
+    - cron: "23 9 * * *"
+  workflow_dispatch:
+
+concurrency:
+  # One sweep at a time. A late schedule waits instead of replacing evidence.
+  group: qa-periodic
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "3"
+  CARGO_BUILD_WARNINGS: deny
+
+jobs:
+  linux:
+    name: linux (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      # Pushes and releases keep the rest of the account's job slots.
+      max-parallel: 3
+      matrix:
+        shard: [backend, windows-settings, windows-layouts, combat-ui, hosted-combat, hosted-world, scenes-port, scenes-island, editor-journeys, editor-panels]
+    env:
+      GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
+      SHARD: ${{ matrix.shard }}
+      WGPU_BACKEND: vulkan
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      PROJECTAG_QA_BACKGROUND: "1"
+      PROJECTAG_QA_CONVERGE_SEC: "90"
+      PROJECTAG_PUBLIC_BOSS_QA_ADMIT: "1"
+      PROJECTAG_CORPSE_QA_ADMIT: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Free disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: Install build dependencies, xvfb, Mesa and PostgreSQL
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-crypt pkg-config libssl-dev cmake clang lld llvm nasm \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-0 \
+            libx11-dev libxi-dev \
+            libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev libvulkan-dev \
+            xvfb mesa-vulkan-drivers libvulkan1 libgl1-mesa-dri vulkan-tools \
+            postgresql postgresql-contrib
+          sudo systemctl stop postgresql || true
+          echo "/usr/lib/postgresql/$(ls /usr/lib/postgresql | sort -V | tail -1)/bin" >> "$GITHUB_PATH"
+          ldconfig -p | grep -F libxkbcommon-x11.so.0
+          ICD="$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | grep -v i686 | head -1)"
+          test -f "$ICD"
+          echo "VK_ICD_FILENAMES=$ICD" >> "$GITHUB_ENV"
+          echo "VK_DRIVER_FILES=$ICD" >> "$GITHUB_ENV"
+      - name: Unlock git-crypt
+        run: |
+          test -n "${GITCRYPT_KEY_B64}" || { echo "Add repository secret GITCRYPT_KEY_B64"; exit 1; }
+          bash .github/scripts/git-crypt-unlock.sh
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+      # Restores what the push jobs saved and never saves, so the sweep adds
+      # nothing to the Actions cache.
+      - uses: Swatinem/rust-cache@v2
+        continue-on-error: true
+        with:
+          workspaces: |
+            . -> target
+            tools/agx -> target
+            backend -> target
+          prefix-key: qa-linux-client
+          shared-key: client
+          save-if: false
+      - name: Software Vulkan adapter present
+        run: |
+          xvfb-run -a vulkaninfo --summary > "$RUNNER_TEMP/vulkaninfo-summary.txt"
+          grep -Ei 'llvmpipe|lavapipe' "$RUNNER_TEMP/vulkaninfo-summary.txt"
+      - name: Build isolated hosted fixture services
+        run: |
+          cargo build --locked --manifest-path backend/Cargo.toml \
+            -p auth-service --bin auth-service \
+            -p api-gateway --bin api-gateway \
+            -p projectag-service --bin projectag-service --example public-boss-journey --example corpse-linger-journey \
+            -p projectag-request-signing --bin sign-fixture-request
+          cargo build --locked --manifest-path backend/Cargo.toml -p projectag-core --features authority \
+            --bin content-check --example qa-combat-arena
+      - name: Harmony pipeline tools
+        # harmony.e2e builds the SDK offline with the pinned wasm-bindgen and wasm-opt.
+        if: ${{ matrix.shard == 'backend' }}
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo install --locked wasm-bindgen-cli --version 0.2.129
+          curl -fsSL -o "$RUNNER_TEMP/binaryen.tgz" https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-linux.tar.gz
+          mkdir -p "$RUNNER_TEMP/binaryen"
+          tar -xzf "$RUNNER_TEMP/binaryen.tgz" -C "$RUNNER_TEMP/binaryen" --strip-components=1
+          echo "$RUNNER_TEMP/binaryen/bin" >> "$GITHUB_PATH"
+          cargo fetch --locked --manifest-path examples/harmony-games/Cargo.toml
+      - name: Shard scenarios
+        run: |
+          set -euo pipefail
+          export TMPDIR="$RUNNER_TEMP"
+          mapfile -t ids < <(python3 scripts/check-qa-homes.py --shard "$SHARD")
+          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json \
+            --output "$RUNNER_TEMP/qa-periodic" "${ids[@]}" \
+            | tee "$RUNNER_TEMP/qa-periodic-run.json"
+      - name: Stage report
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/report/$SHARD"
+          if [ -f "$RUNNER_TEMP/qa-periodic/qa-report.json" ]; then
+            cp "$RUNNER_TEMP/qa-periodic/qa-report.json" "$RUNNER_TEMP/report/$SHARD/"
+          fi
+      - name: Upload report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: qa-periodic-report-${{ matrix.shard }}
+          path: ${{ runner.temp }}/report/**
+          if-no-files-found: warn
+          retention-days: 14
+      # Screenshots of a failed shard, staged like the push jobs' public evidence.
+      - name: Stage failure evidence
+        if: ${{ failure() }}
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/qa-periodic-public"
+          mkdir -p "$stage"
+          if [ -d "$RUNNER_TEMP/qa-periodic" ]; then
+            (cd "$RUNNER_TEMP/qa-periodic" && find . -type f -links 1 \
+              ! -ipath '*/data/*' ! -iname 'fixture.json' -print0 \
+              | cpio --null --pass-through --make-directories --quiet "$stage")
+          fi
+      - name: Upload failure evidence
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: qa-periodic-evidence-${{ matrix.shard }}
+          path: ${{ runner.temp }}/qa-periodic-public/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  macos:
+    name: macos (${{ matrix.shard }})
+    # A VM's Metal device: fast enough for the scenarios a software adapter
+    # cannot time, and the only path for the Metal-only scenarios. It is not
+    # device acceptance.
+    runs-on: macos-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [mac]
+    env:
+      GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
+      SHARD: ${{ matrix.shard }}
+      PROJECTAG_QA_BACKGROUND: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Install git-crypt
+        run: brew install git-crypt
+      - name: Unlock git-crypt
+        run: |
+          test -n "${GITCRYPT_KEY_B64}" || { echo "Add repository secret GITCRYPT_KEY_B64"; exit 1; }
+          bash .github/scripts/git-crypt-unlock.sh
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+      # No push job builds this feature set on macOS, so this job keeps the one
+      # cache the sweep saves.
+      - uses: Swatinem/rust-cache@v2
+        continue-on-error: true
+        with:
+          workspaces: |
+            . -> target
+            tools/agx -> target
+          prefix-key: qa-periodic-macos
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Shard scenarios
+        run: |
+          set -euo pipefail
+          export TMPDIR="$RUNNER_TEMP"
+          # macOS ships bash 3.2, which has no mapfile.
+          ids=()
+          while IFS= read -r id; do ids+=("$id"); done < <(python3 scripts/check-qa-homes.py --shard "$SHARD")
+          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json \
+            --output "$RUNNER_TEMP/qa-periodic" "${ids[@]}" \
+            | tee "$RUNNER_TEMP/qa-periodic-run.json"
+      - name: Stage report
+        if: ${{ always() }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/report/$SHARD"
+          if [ -f "$RUNNER_TEMP/qa-periodic/qa-report.json" ]; then
+            cp "$RUNNER_TEMP/qa-periodic/qa-report.json" "$RUNNER_TEMP/report/$SHARD/"
+          fi
+      - name: Upload report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: qa-periodic-report-${{ matrix.shard }}
+          path: ${{ runner.temp }}/report/**
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Stage failure evidence
+        if: ${{ failure() }}
+        run: |
+          stage="$RUNNER_TEMP/qa-periodic-public"
+          mkdir -p "$stage"
+          if [ -d "$RUNNER_TEMP/qa-periodic" ]; then
+            (cd "$RUNNER_TEMP/qa-periodic" && find . -type f -links 1 \
+              ! -ipath '*/data/*' ! -iname 'fixture.json' -print0 \
+              | cpio -0 -p -d --quiet "$stage")
+          fi
+      - name: Upload failure evidence
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: qa-periodic-evidence-${{ matrix.shard }}
+          path: ${{ runner.temp }}/qa-periodic-public/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  rtx-pack:
+    name: rtx pack
+    # The newest private Windows QA pack a push already built, so the sweep
+    # builds none. Skipped while the owner's GPU runner is off.
+    if: ${{ vars.GPU_RUNNER_AVAILABLE == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run_id: ${{ steps.find.outputs.run_id }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Find the newest pack
+        id: find
+        run: |
+          run_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=projectag-qa-windows-pack&per_page=30" \
+            --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "master")][0].workflow_run.id')"
+          test -n "$run_id" && test "$run_id" != null
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
+  rtx:
+    name: rtx
+    needs: rtx-pack
+    # The owner's runner is off by default and runs in batches: only while the
+    # switch is on, one shard, one job at a time.
+    if: ${{ vars.GPU_RUNNER_AVAILABLE == 'true' }}
+    runs-on: [self-hosted, Windows, heavy-gpu]
+    concurrency:
+      group: qa-periodic-gpu
+      cancel-in-progress: false
+    timeout-minutes: 90
+    steps:
+      - name: Download private QA pack
+        uses: actions/download-artifact@v8
+        with:
+          name: projectag-qa-windows-pack
+          path: ${{ runner.temp }}/qa-download
+          run-id: ${{ needs.rtx-pack.outputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Expand private QA pack
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $zip = Join-Path $env:RUNNER_TEMP "qa-download\projectag-qa-windows.zip"
+          $expanded = Join-Path $env:RUNNER_TEMP "qa-expanded"
+          if (Test-Path -LiteralPath $expanded) { Remove-Item -LiteralPath $expanded -Recurse -Force }
+          Expand-Archive -LiteralPath $zip -DestinationPath $expanded -Force
+          if (!(Test-Path -LiteralPath (Join-Path $expanded "projectag-qa-windows\pack.json"))) {
+            throw "invalid QA pack"
+          }
+      - name: Install DirectX Shader Compiler
+        shell: pwsh
+        run: |
+          $pack = Join-Path $env:RUNNER_TEMP "qa-expanded\projectag-qa-windows"
+          Invoke-WebRequest -Uri https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.8.2505/dxc_2025_05_24.zip -OutFile dxc.zip
+          Expand-Archive dxc.zip -DestinationPath dxc -Force
+          Copy-Item dxc/bin/x64/dxc.exe $pack -Force
+          Copy-Item dxc/bin/x64/dxcompiler.dll $pack -Force
+          Copy-Item dxc/bin/x64/dxil.dll $pack -Force
+      - name: Shard scenarios
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pack = Join-Path $env:RUNNER_TEMP "qa-expanded\projectag-qa-windows"
+          $results = Join-Path $env:RUNNER_TEMP "qa-periodic"
+          Remove-Item -LiteralPath $results -Recurse -Force -ErrorAction SilentlyContinue
+          Set-Location $pack
+          & (Join-Path $pack "agx.exe") qa run --pack . --output $results --driver harness --ready-timeout 240 --require-execution --json `
+            combat.abilities-ui combat.ability-actions world-content.shores-raytracing-full world-content.shores-raytracing-shadows `
+            | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP "qa-periodic-run.json")
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Stage report
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "report\rtx"
+          New-Item -ItemType Directory -Force -Path $report | Out-Null
+          $source = Join-Path $env:RUNNER_TEMP "qa-periodic\qa-report.json"
+          if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source $report -Force }
+      - name: Upload report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: qa-periodic-report-rtx
+          path: ${{ runner.temp }}/report/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  report:
+    name: report
+    needs: [linux, macos, rtx]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      # One issue stays open while the sweep is red.
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Download shard reports
+        uses: actions/download-artifact@v8
+        with:
+          pattern: qa-periodic-report-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/reports
+      - name: Summarize
+        env:
+          QA_PERIODIC_SHARDS: backend=${{ needs.linux.result }} windows-settings=${{ needs.linux.result }} windows-layouts=${{ needs.linux.result }} combat-ui=${{ needs.linux.result }} hosted-combat=${{ needs.linux.result }} hosted-world=${{ needs.linux.result }} scenes-port=${{ needs.linux.result }} scenes-island=${{ needs.linux.result }} editor-journeys=${{ needs.linux.result }} editor-panels=${{ needs.linux.result }} mac=${{ needs.macos.result }} rtx=${{ needs.rtx.result }}
+        run: python3 .github/scripts/qa-periodic-report.py "$RUNNER_TEMP/reports" "$RUNNER_TEMP/summary" --issue
+      - name: Upload summary
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: qa-periodic-summary
+          path: ${{ runner.temp }}/summary/summary.json
+          if-no-files-found: warn
+          retention-days: 30
