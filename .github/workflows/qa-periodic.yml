@@ -81,8 +81,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.99.1"
-      # Restores what the push jobs saved and never saves, so the sweep adds
-      # nothing to the Actions cache.
+      # Shares the client job's cache key: an exact hit saves nothing, so the
+      # sweep adds at most the one entry that key would have anyway.
       - uses: Swatinem/rust-cache@v2
         continue-on-error: true
         with:
@@ -92,12 +92,17 @@ jobs:
             backend -> target
           prefix-key: qa-linux-client
           shared-key: client
-          save-if: false
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Software Vulkan adapter present
         run: |
           xvfb-run -a vulkaninfo --summary > "$RUNNER_TEMP/vulkaninfo-summary.txt"
           grep -Ei 'llvmpipe|lavapipe' "$RUNNER_TEMP/vulkaninfo-summary.txt"
       - name: Build isolated hosted fixture services
+        env:
+          # Boot prepares both bundled maps before binding /readyz. Keep
+          # optimized services in target/debug, where --no-build finds them.
+          CARGO_PROFILE_DEV_OPT_LEVEL: "3"
         run: |
           cargo build --locked --manifest-path backend/Cargo.toml \
             -p auth-service --bin auth-service \
