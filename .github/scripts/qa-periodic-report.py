@@ -64,7 +64,7 @@ def build_summary(reports_dir: Path, results: dict[str, str], run_url: str, sha:
                 summary["skipped_shards"].append(shard)
             else:
                 summary["missing_shards"].append(shard)
-            summary["shards"][shard] = {"job": result, "scenarios": 0, "failed": 0, "review_pending": 0, "minutes": 0}
+            summary["shards"][shard] = {"scenarios": 0, "failed": 0, "review_pending": 0, "minutes": 0}
             continue
         failed = []
         pending = 0
@@ -83,7 +83,6 @@ def build_summary(reports_dir: Path, results: dict[str, str], run_url: str, sha:
             failed.append(row.get("id", "?"))
         summary["failed"] += failed
         summary["shards"][shard] = {
-            "job": result,
             "scenarios": len(report["scenarios"]),
             "failed": len(failed),
             "review_pending": pending,
@@ -98,10 +97,10 @@ def is_red(summary: dict) -> bool:
 
 
 def job_summary(summary: dict) -> str:
-    lines = ["## QA periodic sweep", "", "| shard | job | scenarios | failed | visual review pending | minutes |", "|---|---|---|---|---|---|"]
+    lines = ["## QA periodic sweep", "", "| shard | scenarios | failed | visual review pending | minutes |", "|---|---|---|---|---|"]
     for shard, row in summary["shards"].items():
         lines.append(
-            f"| {shard} | {row['job']} | {row['scenarios']} | {row['failed']} | {row['review_pending']} | {row['minutes']} |"
+            f"| {shard} | {row['scenarios']} | {row['failed']} | {row['review_pending']} | {row['minutes']} |"
         )
     lines += ["", f"Failing scenarios: {len(summary['failed'])}."]
     if summary["missing_shards"]:

@@ -103,7 +103,8 @@ jobs:
             -p auth-service --bin auth-service \
             -p api-gateway --bin api-gateway \
             -p projectag-service --bin projectag-service --example public-boss-journey --example corpse-linger-journey \
-            -p projectag-request-signing --bin sign-fixture-request
+            -p projectag-request-signing --bin sign-fixture-request \
+            -p projectag-content-store --bin content-store
           cargo build --locked --manifest-path backend/Cargo.toml -p projectag-core --features authority \
             --bin content-check --example qa-combat-arena
       - name: Harmony pipeline tools
@@ -117,13 +118,30 @@ jobs:
           tar -xzf "$RUNNER_TEMP/binaryen.tgz" -C "$RUNNER_TEMP/binaryen" --strip-components=1
           echo "$RUNNER_TEMP/binaryen/bin" >> "$GITHUB_PATH"
           cargo fetch --locked --manifest-path examples/harmony-games/Cargo.toml
+      - name: Build hosted sweep client once
+        if: ${{ matrix.shard == 'hosted-combat' || matrix.shard == 'hosted-world' }}
+        run: |
+          features=game,local-sim,raytracing,qa-harness
+          # Shared drafts in hosted-world also exercises the editor graph.
+          if [[ "$SHARD" == hosted-world ]]; then
+            features+=,projectag-editor
+          fi
+          PROJECTAG_DEFAULT_API=off CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" \
+            BEVY_ASSET_ROOT="$GITHUB_WORKSPACE" CARGO_MANIFEST_DIR="$GITHUB_WORKSPACE" \
+            cargo build --locked --release --features "$features" --bin engine
       - name: Shard scenarios
         run: |
           set -euo pipefail
           export TMPDIR="$RUNNER_TEMP"
           mapfile -t ids < <(python3 scripts/check-qa-homes.py --shard "$SHARD")
+          build_args=()
+          # Each hosted shard uses one client feature set. All its fixture
+          # binaries were built above; do not repeat Cargo before every case.
+          if [[ "$SHARD" == hosted-combat || "$SHARD" == hosted-world ]]; then
+            build_args+=(--no-build)
+          fi
           cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json \
-            --output "$RUNNER_TEMP/qa-periodic" "${ids[@]}" \
+            "${build_args[@]}" --output "$RUNNER_TEMP/qa-periodic" "${ids[@]}" \
             | tee "$RUNNER_TEMP/qa-periodic-run.json"
       - name: Stage report
         if: ${{ always() }}
@@ -171,19 +189,23 @@ jobs:
     timeout-minutes: 240
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
-        shard: [mac]
+        shard: [mac, mac-hosted]
     env:
       GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
       SHARD: ${{ matrix.shard }}
       PROJECTAG_QA_BACKGROUND: "1"
+      PROJECTAG_QA_CONVERGE_SEC: "90"
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 1
           persist-credentials: false
-      - name: Install git-crypt
-        run: brew install git-crypt
+      - name: Install git-crypt and PostgreSQL
+        run: |
+          brew install git-crypt postgresql
+          echo "$(brew --prefix postgresql)/bin" >> "$GITHUB_PATH"
       - name: Unlock git-crypt
         run: |
           test -n "${GITCRYPT_KEY_B64}" || { echo "Add repository secret GITCRYPT_KEY_B64"; exit 1; }
@@ -199,9 +221,20 @@ jobs:
           workspaces: |
             . -> target
             tools/agx -> target
+            backend -> target
           prefix-key: qa-periodic-macos
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Build isolated hosted fixture services
+        run: |
+          cargo build --locked --manifest-path backend/Cargo.toml \
+            -p auth-service --bin auth-service \
+            -p api-gateway --bin api-gateway \
+            -p projectag-service --bin projectag-service --example public-boss-journey --example corpse-linger-journey \
+            -p projectag-request-signing --bin sign-fixture-request \
+            -p projectag-content-store --bin content-store
+          cargo build --locked --manifest-path backend/Cargo.toml -p projectag-core --features authority \
+            --bin content-check --example qa-combat-arena
       - name: Shard scenarios
         run: |
           set -euo pipefail
@@ -360,7 +393,7 @@ jobs:
           path: ${{ runner.temp }}/reports
       - name: Summarize
         env:
-          QA_PERIODIC_SHARDS: backend=${{ needs.linux.result }} windows-settings=${{ needs.linux.result }} windows-layouts=${{ needs.linux.result }} combat-ui=${{ needs.linux.result }} hosted-combat=${{ needs.linux.result }} hosted-world=${{ needs.linux.result }} scenes-port=${{ needs.linux.result }} scenes-island=${{ needs.linux.result }} editor-journeys=${{ needs.linux.result }} editor-panels=${{ needs.linux.result }} mac=${{ needs.macos.result }} rtx=${{ needs.rtx.result }}
+          QA_PERIODIC_SHARDS: backend=${{ needs.linux.result }} windows-settings=${{ needs.linux.result }} windows-layouts=${{ needs.linux.result }} combat-ui=${{ needs.linux.result }} hosted-combat=${{ needs.linux.result }} hosted-world=${{ needs.linux.result }} scenes-port=${{ needs.linux.result }} scenes-island=${{ needs.linux.result }} editor-journeys=${{ needs.linux.result }} editor-panels=${{ needs.linux.result }} mac=${{ needs.macos.result }} mac-hosted=${{ needs.macos.result }} rtx=${{ needs.rtx.result }}
         run: python3 .github/scripts/qa-periodic-report.py "$RUNNER_TEMP/reports" "$RUNNER_TEMP/summary" --issue
       - name: Upload summary
         if: ${{ always() }}
