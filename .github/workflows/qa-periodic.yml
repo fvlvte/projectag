@@ -106,6 +106,7 @@ jobs:
         run: |
           cargo build --locked --manifest-path backend/Cargo.toml \
             -p auth-service --bin auth-service \
+            -p projectag-shard --bin projectag-shard \
             -p api-gateway --bin api-gateway \
             -p projectag-service --bin projectag-service --example public-boss-journey --example corpse-linger-journey \
             -p projectag-request-signing --bin sign-fixture-request \
@@ -238,12 +239,19 @@ jobs:
         run: |
           cargo build --locked --manifest-path backend/Cargo.toml \
             -p auth-service --bin auth-service \
+            -p projectag-shard --bin projectag-shard \
             -p api-gateway --bin api-gateway \
             -p projectag-service --bin projectag-service --example public-boss-journey --example corpse-linger-journey \
             -p projectag-request-signing --bin sign-fixture-request \
             -p projectag-content-store --bin content-store
           cargo build --locked --manifest-path backend/Cargo.toml -p projectag-core --features authority \
             --bin content-check --example qa-combat-arena
+      - name: Build hosted sweep client once
+        if: ${{ matrix.shard == 'mac-hosted' }}
+        run: |
+          PROJECTAG_DEFAULT_API=off CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" \
+            BEVY_ASSET_ROOT="$GITHUB_WORKSPACE" CARGO_MANIFEST_DIR="$GITHUB_WORKSPACE" \
+            cargo build --locked --release --features game,local-sim,raytracing,qa-harness --bin engine
       - name: Shard scenarios
         run: |
           set -euo pipefail
@@ -251,8 +259,12 @@ jobs:
           # macOS ships bash 3.2, which has no mapfile.
           ids=()
           while IFS= read -r id; do ids+=("$id"); done < <(python3 scripts/check-qa-homes.py --shard "$SHARD")
+          build_args=()
+          if [[ "$SHARD" == mac-hosted ]]; then
+            build_args+=(--no-build)
+          fi
           cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json \
-            --output "$RUNNER_TEMP/qa-periodic" "${ids[@]}" \
+            "${build_args[@]}" --output "$RUNNER_TEMP/qa-periodic" "${ids[@]}" \
             | tee "$RUNNER_TEMP/qa-periodic-run.json"
       - name: Stage report
         if: ${{ always() }}
@@ -356,7 +368,7 @@ jobs:
           Remove-Item -LiteralPath $results -Recurse -Force -ErrorAction SilentlyContinue
           Set-Location $pack
           & (Join-Path $pack "agx.exe") qa run --pack . --output $results --driver harness --ready-timeout 240 --require-execution --json `
-            combat.abilities-ui combat.ability-actions world-content.shores-raytracing-full world-content.shores-raytracing-shadows `
+            combat.abilities-ui combat.ability-actions identity.splash-play-end world-content.shores-raytracing-full world-content.shores-raytracing-shadows `
             | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP "qa-periodic-run.json")
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Stage report
