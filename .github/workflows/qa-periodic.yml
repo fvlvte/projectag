@@ -231,6 +231,10 @@ jobs:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Build isolated hosted fixture services
+        env:
+          # Boot prepares both bundled maps before binding /readyz. Keep
+          # optimized services in target/debug, where --no-build finds them.
+          CARGO_PROFILE_DEV_OPT_LEVEL: "3"
         run: |
           cargo build --locked --manifest-path backend/Cargo.toml \
             -p auth-service --bin auth-service \
