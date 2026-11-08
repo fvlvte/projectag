@@ -256,7 +256,7 @@ jobs:
         run: |
           set -euo pipefail
           export TMPDIR="$RUNNER_TEMP"
-          # macOS ships bash 3.2, which has no mapfile.
+          # macOS ships bash 3.2: no mapfile, and under set -u an empty array is unbound.
           ids=()
           while IFS= read -r id; do ids+=("$id"); done < <(python3 scripts/check-qa-homes.py --shard "$SHARD")
           build_args=()
@@ -264,7 +264,7 @@ jobs:
             build_args+=(--no-build)
           fi
           cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json \
-            "${build_args[@]}" --output "$RUNNER_TEMP/qa-periodic" "${ids[@]}" \
+            ${build_args[@]+"${build_args[@]}"} --output "$RUNNER_TEMP/qa-periodic" "${ids[@]}" \
             | tee "$RUNNER_TEMP/qa-periodic-run.json"
       - name: Stage report
         if: ${{ always() }}
