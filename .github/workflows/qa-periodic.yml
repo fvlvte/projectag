@@ -113,6 +113,10 @@ jobs:
             -p projectag-content-store --bin content-store
           cargo build --locked --manifest-path backend/Cargo.toml -p projectag-core --features authority \
             --bin content-check --example qa-combat-arena
+      - name: Build browser approval auth fixture
+        if: ${{ matrix.shard == 'hosted-world' }}
+        run: |
+          python3 -c 'import sys; sys.path.insert(0, "backend/scripts"); from qa_account_stack import auth_test_executable; auth_test_executable()'
       - name: Harmony pipeline tools
         # harmony.e2e builds the SDK offline with the pinned wasm-bindgen and wasm-opt.
         if: ${{ matrix.shard == 'backend' }}
