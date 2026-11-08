@@ -239,8 +239,22 @@ jobs:
           echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
           command -v cargo-ndk >/dev/null || cargo install cargo-ndk --locked
 
+      - name: DXC archive identity
+        if: ${{ matrix.kind == 'windows' }}
+        id: dxc
+        run: |
+          python3 -c 'import runpy; print("sha256=" + runpy.run_path("scripts/stage-dxc-runtime.py")["DXC_ARCHIVE_SHA256"])' >> "$GITHUB_OUTPUT"
+
+      - name: Cache verified DXC archive
+        if: ${{ matrix.kind == 'windows' }}
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/dxc-archive
+          key: dxc-archive-${{ steps.dxc.outputs.sha256 }}
+
       - name: Build and seal the ${{ matrix.kind }} package
         env:
+          DXC_ARCHIVE_CACHE_DIR: ${{ runner.temp }}/dxc-archive
           AGX_CI_PACKAGE_KEY: ${{ secrets.AGX_CI_PACKAGE_KEY }}
           # Only this step sees the native key (not the mingw or NDK installs
           # above); the script writes it for the one command and deletes it.
