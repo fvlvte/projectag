@@ -44,7 +44,7 @@ jobs:
           } > /dev/null 2>&1
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99.0"
+          toolchain: "1.99.1"
       - name: run
         env:
           GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
@@ -81,7 +81,7 @@ jobs:
           { brew install git-crypt age zstd jq openssl@3; } > /dev/null 2>&1
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99.0"
+          toolchain: "1.99.1"
       - name: run
         env:
           GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
@@ -133,7 +133,7 @@ jobs:
     needs: win-src
     # claude/ci-gpu/ runs on the owner's self-hosted RTX machine; it may be offline, so a run can queue.
     runs-on: ${{ startsWith(github.ref_name, 'claude/ci-gpu/') && fromJSON('["self-hosted","Windows","heavy-gpu"]') || 'windows-latest' }}
-    timeout-minutes: 240
+    timeout-minutes: ${{ startsWith(github.ref_name, 'claude/ci-gpu/') && 840 || 240 }}
     defaults:
       run:
         shell: bash
@@ -165,7 +165,7 @@ jobs:
           Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'age')
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99.0"
+          toolchain: "1.99.1"
       - name: fetch source
         uses: actions/download-artifact@v4
         with:
