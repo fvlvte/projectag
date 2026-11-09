@@ -133,7 +133,7 @@ jobs:
     needs: win-src
     # claude/ci-gpu/ runs on the owner's self-hosted RTX machine; it may be offline, so a run can queue.
     runs-on: ${{ startsWith(github.ref_name, 'claude/ci-gpu/') && fromJSON('["self-hosted","Windows","heavy-gpu"]') || 'windows-latest' }}
-    timeout-minutes: 240
+    timeout-minutes: ${{ startsWith(github.ref_name, 'claude/ci-gpu/') && 840 || 240 }}
     defaults:
       run:
         shell: bash
