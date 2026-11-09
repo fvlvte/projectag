@@ -174,7 +174,8 @@ jobs:
         id: rust
         with:
           toolchain: "1.99.1"
-          components: rustfmt
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
       - name: Documentation check
         run: python3 scripts/check-docs.py
       - name: Engine workflow pilot contracts
