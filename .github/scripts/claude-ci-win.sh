@@ -5,7 +5,14 @@
 # job log.
 set +x +e
 T="$(cygpath -u "$RUNNER_TEMP")"; WS="$(cygpath -u "$GITHUB_WORKSPACE")"
-R="$T/claude-ci"; mkdir -p "$R/results" "$R/ws"
+exec 3>&1
+R="$T/claude-ci"
+if [ -e "$R" ] || [ -e "$WS/claude-ci" ] || [ -e "$WS/results.age" ] || [ -e "$WS/ci-cache.enc" ]; then
+  printf 'IDP1_CLEANUP stale_ci_area_present %s\n' "$(date -u +%FT%TZ)" >&3
+  exit 74
+fi
+printf 'IDP1_CLEANUP prior_ci_area_absent %s prior_runs=42722541358,42780853329\n' "$(date -u +%FT%TZ)" >&3
+mkdir -p "$R/results" "$R/ws"
 exec > "$R/results/runner.log" 2>&1
 set -u -o pipefail
 umask 077
