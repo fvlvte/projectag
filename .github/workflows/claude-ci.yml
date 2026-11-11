@@ -43,12 +43,17 @@ jobs:
           missing=$(for p in $want; do dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'install ok installed' || echo "$p"; done | tr '\n' ' ')
           echo "missing: ${missing:-none}"
           [ -z "${missing// }" ] && exit 0
-          A="-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o DPkg::Lock::Timeout=120"
+          A="-o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o DPkg::Lock::Timeout=120"
           log="$RUNNER_TEMP/apt.log"
-          try() { timeout 480 sudo apt-get $A update -qq >> "$log" 2>&1; timeout 600 sudo apt-get $A install -y -qq $missing >> "$log" 2>&1; }
+          try() { timeout 120 sudo apt-get $A update -qq >> "$log" 2>&1; timeout 480 sudo apt-get $A install -y -qq $missing >> "$log" 2>&1; }
           try && exit 0
           echo "apt attempt 1 failed; switching to archive.ubuntu.com"
-          sudo sed -i 's#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g' /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
+          sudo sed -i \
+            -e 's#http://azure.archive.ubuntu.com#https://archive.ubuntu.com#g' \
+            -e 's#https://azure.archive.ubuntu.com#https://archive.ubuntu.com#g' \
+            -e 's#http://security.ubuntu.com#https://archive.ubuntu.com#g' \
+            -e 's#https://security.ubuntu.com#https://archive.ubuntu.com#g' \
+            /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
           try && exit 0
           echo "apt failed twice; last log lines:"; tail -40 "$log"; exit 100
       - uses: dtolnay/rust-toolchain@master
@@ -125,10 +130,15 @@ jobs:
           fetch-depth: 1
       - name: prepare runner
         run: |
-          A="-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o DPkg::Lock::Timeout=120"; log="$RUNNER_TEMP/apt.log"
+          A="-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o DPkg::Lock::Timeout=120"; log="$RUNNER_TEMP/apt.log"
           try() { timeout 300 sudo apt-get $A update -qq >> "$log" 2>&1; timeout 300 sudo apt-get $A install -y -qq git-crypt >> "$log" 2>&1; }
           try && exit 0
-          sudo sed -i 's#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g' /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
+          sudo sed -i \
+            -e 's#http://azure.archive.ubuntu.com#https://archive.ubuntu.com#g' \
+            -e 's#https://azure.archive.ubuntu.com#https://archive.ubuntu.com#g' \
+            -e 's#http://security.ubuntu.com#https://archive.ubuntu.com#g' \
+            -e 's#https://security.ubuntu.com#https://archive.ubuntu.com#g' \
+            /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
           try && exit 0
           echo "apt failed twice; last log lines:"; tail -40 "$log"; exit 100
       - name: pack
