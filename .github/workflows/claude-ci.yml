@@ -197,4 +197,12 @@ jobs:
         if: always() && startsWith(github.ref_name, 'claude/ci-gpu/')
         shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
         run: |
-          foreach ($p in @((Join-Path $env:RUNNER_TEMP 'claude-ci'), (Join-Path $env:RUNNER_TEMP 'src'), (Join-Path $env:GITHUB_WORKSPACE 'ci-cache.enc'), (Join-Path $env:GITHUB_WORKSPACE 'results.age'))) { if (Test-Path $p) { Remove-Item -Recurse -Force $p } }
+          # QA evidence paths exceed MAX_PATH; rd with the \\?\ prefix removes them. Fail only if plaintext remains.
+          $left = @()
+          foreach ($p in @((Join-Path $env:RUNNER_TEMP 'claude-ci'), (Join-Path $env:RUNNER_TEMP 'src'), (Join-Path $env:GITHUB_WORKSPACE 'ci-cache.enc'), (Join-Path $env:GITHUB_WORKSPACE 'results.age'))) {
+            if (-not (Test-Path -LiteralPath $p)) { continue }
+            if ((Get-Item -LiteralPath $p -Force).PSIsContainer) { cmd /c rd /s /q "\\?\$p" } else { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }
+            if (Test-Path -LiteralPath $p) { $left += $p }
+          }
+          if ($left.Count -gt 0) { Write-Output "plaintext left: $($left -join ', ')"; exit 1 }
+          exit 0
