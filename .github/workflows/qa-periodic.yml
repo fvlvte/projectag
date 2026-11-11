@@ -372,7 +372,7 @@ jobs:
           Remove-Item -LiteralPath $results -Recurse -Force -ErrorAction SilentlyContinue
           Set-Location $pack
           & (Join-Path $pack "agx.exe") qa run --pack . --output $results --driver harness --ready-timeout 240 --require-execution --json `
-            combat.abilities-ui combat.ability-actions identity.splash-play-end world-content.shores-raytracing-full world-content.shores-raytracing-shadows `
+            combat.abilities-ui combat.ability-actions identity.splash-play-end world-content.shores-raytracing-full world-content.shores-raytracing-full-dusk world-content.shores-raytracing-full-arrival-noon world-content.shores-raytracing-full-arrival-dusk world-content.shores-raytracing-shadows `
             | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP "qa-periodic-run.json")
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Stage report
