@@ -42,15 +42,17 @@ jobs:
           missing=$(for p in $want; do dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'install ok installed' || echo "$p"; done | tr '\n' ' ')
           echo "missing: ${missing:-none}"
           [ -z "${missing// }" ] && exit 0
-          # Bounded apt over a mirror list: the image's ubuntu.com sources, then mirrors.edge.kernel.org, then
-          # mirror.math.princeton.edu (2026-11-11 GitHub runners could not resolve security.ubuntu.com and the azure
-          # mirror hung). Prints the apt log tail when every mirror fails.
+          # Bounded apt over a mirror list: mirrors.edge.kernel.org, mirror.math.princeton.edu, then the image default
+          # (2026-11-11: GitHub runners could not resolve security.ubuntu.com and the azure mirror hung).
+          # Prints the apt log tail when every mirror fails.
           A="-o Acquire::Retries=1 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o DPkg::Lock::Timeout=120"
           log="$RUNNER_TEMP/apt.log"
-          for m in default http://mirrors.edge.kernel.org/ubuntu http://mirror.math.princeton.edu/pub/ubuntu; do
+          for m in http://mirrors.edge.kernel.org/ubuntu http://mirror.math.princeton.edu/pub/ubuntu default; do
             if [ "$m" != default ]; then
-              echo "apt: switching sources to $m"
-              sudo sed -i -E "s#https?://[A-Za-z0-9.-]+(/pub)?/ubuntu/?#$m/#g" /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
+              # GitHub images point apt at mirror+file:/etc/apt/apt-mirrors.txt; replace that list and any direct URL.
+              echo "apt: using $m"
+              printf '%s/\tpriority:1\n' "$m" | sudo tee /etc/apt/apt-mirrors.txt > /dev/null
+              sudo sed -i -E -e "s#mirror\+file:/etc/apt/apt-mirrors.txt#$m/#g" -e "s#https?://[A-Za-z0-9.-]+(/pub)?/ubuntu/?#$m/#g" /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
             fi
             timeout 150 sudo apt-get $A update >> "$log" 2>&1 || echo "apt update incomplete via $m"
             timeout 420 sudo apt-get $A install -y -qq $missing >> "$log" 2>&1 && { echo "apt ok via $m"; exit 0; }
@@ -130,15 +132,17 @@ jobs:
           fetch-depth: 1
       - name: prepare runner
         run: |
-          # Bounded apt over a mirror list: the image's ubuntu.com sources, then mirrors.edge.kernel.org, then
-          # mirror.math.princeton.edu (2026-11-11 GitHub runners could not resolve security.ubuntu.com and the azure
-          # mirror hung). Prints the apt log tail when every mirror fails.
+          # Bounded apt over a mirror list: mirrors.edge.kernel.org, mirror.math.princeton.edu, then the image default
+          # (2026-11-11: GitHub runners could not resolve security.ubuntu.com and the azure mirror hung).
+          # Prints the apt log tail when every mirror fails.
           A="-o Acquire::Retries=1 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o DPkg::Lock::Timeout=120"
           log="$RUNNER_TEMP/apt.log"
-          for m in default http://mirrors.edge.kernel.org/ubuntu http://mirror.math.princeton.edu/pub/ubuntu; do
+          for m in http://mirrors.edge.kernel.org/ubuntu http://mirror.math.princeton.edu/pub/ubuntu default; do
             if [ "$m" != default ]; then
-              echo "apt: switching sources to $m"
-              sudo sed -i -E "s#https?://[A-Za-z0-9.-]+(/pub)?/ubuntu/?#$m/#g" /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
+              # GitHub images point apt at mirror+file:/etc/apt/apt-mirrors.txt; replace that list and any direct URL.
+              echo "apt: using $m"
+              printf '%s/\tpriority:1\n' "$m" | sudo tee /etc/apt/apt-mirrors.txt > /dev/null
+              sudo sed -i -E -e "s#mirror\+file:/etc/apt/apt-mirrors.txt#$m/#g" -e "s#https?://[A-Za-z0-9.-]+(/pub)?/ubuntu/?#$m/#g" /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
             fi
             timeout 120 sudo apt-get $A update >> "$log" 2>&1 || echo "apt update incomplete via $m"
             timeout 240 sudo apt-get $A install -y -qq git-crypt >> "$log" 2>&1 && { echo "apt ok via $m"; exit 0; }
