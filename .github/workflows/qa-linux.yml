@@ -1,7 +1,10 @@
 # Linux QA gate for pull requests and every master commit: static checks, core
 # and backend tests, and a software-adapter client harness. On master each push
 # runs every job (no path filter, no cancellation) and the `master gate` job is
-# its single pass/fail result. It does not block `cargo agx deploy --from-ci`,
+# its single pass/fail result. `core`, `backend` and `client` each run as
+# parallel matrix legs; every check step names the leg that runs it, and a
+# job's result is success only when all its legs passed. Job `evidence` merges
+# the legs' evidence into one artifact per family. It does not block `cargo agx deploy --from-ci`,
 # which requires a green master-packages run. Job `report` posts one `QA gate` comment per
 # run to the Paperclip issue named by the branch and, when every required run
 # is green and the issue carries `awaiting-ci`, advances it to its review
@@ -383,11 +386,18 @@ jobs:
           done
 
   core:
-    name: core (client check, schedules, authority)
+    # Five parallel legs of one job: the setup steps run in every leg and each
+    # check step names the one leg that runs it. needs.core.result is success
+    # only when every leg passed.
+    name: core ${{ matrix.leg }} (client check, schedules, authority)
     needs: changes
     if: ${{ needs.changes.outputs.rust == 'true' || github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [checks, shipped, authority, editor-a, editor-b]
     env:
       GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
     steps:
@@ -423,24 +433,32 @@ jobs:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Vendored block compiler compatibility (compile only)
+        if: ${{ matrix.leg == 'checks' }}
         run: |
           cargo agx check --id vendor.block.check
       - name: Vendored UI text measurement and layout regressions
+        if: ${{ matrix.leg == 'checks' }}
         run: |
           cargo test --locked -p bevy_ui --lib widget::text::tests::
           cargo test --locked -p bevy_ui --lib layout::ui_surface::text_buffer_tests::
       - name: Vendored winit retired window regressions
+        if: ${{ matrix.leg == 'checks' }}
         run: |
           timeout 600s xvfb-run -a cargo agx check --id winit.retired-destroyed --id winit.native-retired-destroyed
       - name: cargo check --features game
+        if: ${{ matrix.leg == 'checks' }}
         run: cargo check --features game
       - name: cargo check --features game,actors
+        if: ${{ matrix.leg == 'checks' }}
         run: cargo check --features game,actors
       - name: cargo check --features lua --bin tikdong
+        if: ${{ matrix.leg == 'checks' }}
         run: cargo check --features lua --bin tikdong
       - name: Standalone bot keeps the saved broadcast
+        if: ${{ matrix.leg == 'checks' }}
         run: cargo test -p tikdong --bin tikdong --features lua -- session_tests::connected_room_uses_the_saved_broadcast --exact
       - name: Independent product clients
+        if: ${{ matrix.leg == 'checks' }}
         run: |
           cargo check -p projectag-client --bin projectag
           cargo check -p actors-client --bin actors
@@ -448,6 +466,7 @@ jobs:
           cargo check -p tikdong --features gm-playtest-helper --bin playtest-helper
           cargo check -p projectag-client --features gm-playtest-helper --bin playtest-helper
       - name: cargo check (wasm32 web client)
+        if: ${{ matrix.leg == 'checks' }}
         # The browser client has its own Bevy feature table and dependency
         # set (Cargo.toml wasm32 target); the native checks prove nothing
         # about it. `.cargo/config.toml` carries the getrandom cfg.
@@ -457,19 +476,23 @@ jobs:
           cargo check -p projectag-client --target wasm32-unknown-unknown --features web-webgl2 --bin projectag
           cargo check -p actors-client --target wasm32-unknown-unknown --features web-webgl2 --bin actors
       - name: Moonlight unit and native socket tests
+        if: ${{ matrix.leg == 'checks' }}
         # Twice: the 2D build, then `3d`, the only build that compiles the gfx
         # quality tables, mesh LOD, scene3d, resume and render-profile tests.
         run: |
           cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check --id moonlight.lib.harness.2d --id moonlight.lib.harness
       - name: "Moonlight ray tracing: example compiles, GPU-free unit tests"
+        if: ${{ matrix.leg == 'checks' }}
         # Shipped desktop sets enable `raytracing` (opt-in, default Off).
         # Runners have no ray-query GPU, so the example is compile-only;
         # run it by hand on an Apple9+ Mac.
         run: |
           cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check --id moonlight.example.raytracing --id moonlight.lib.raytracing
       - name: Independent Moonlight host
+        if: ${{ matrix.leg == 'checks' }}
         run: CARGO_TARGET_DIR=target cargo test --locked --manifest-path examples/moonlight-counter/Cargo.toml
       - name: Harmony example rules and application components
+        if: ${{ matrix.leg == 'checks' }}
         env:
           CARGO_TARGET_DIR: target
         run: |
@@ -477,6 +500,7 @@ jobs:
           cargo test --locked --manifest-path examples/harmony-games/Cargo.toml --no-default-features --lib
           cargo test --locked --manifest-path examples/harmony-games/Cargo.toml --bin harmony-games
       - name: Independent Moonlight browser checks
+        if: ${{ matrix.leg == 'checks' }}
         # Resolve the standalone host separately so product features cannot
         # supply missing browser bindings. Reuse the core job's target cache.
         env:
@@ -487,10 +511,12 @@ jobs:
           cargo check --locked --manifest-path examples/harmony-games/Cargo.toml --target wasm32-unknown-unknown --features web-webgl2 --bin harmony-games
           cargo check --locked --manifest-path examples/harmony-games/Cargo.toml --target wasm32-unknown-unknown --features web-webgpu --bin harmony-games
       - name: Engine and launcher package boundaries
+        if: ${{ matrix.leg == 'checks' }}
         run: |
           cargo fetch --locked --target x86_64-unknown-linux-gnu
           cargo test --locked --manifest-path tools/agx/Cargo.toml --features engine-checks --test engine_packages
       - name: Unit tests (shipped feature set)
+        if: ${{ matrix.leg == 'shipped' }}
         # Every `#[cfg(test)]` module in the crate, not only `schedule_tests`:
         # the filter hid a mail_ui test that panicked on the blank world for
         # the same reason the `qa fixtures` build did (2026-09-16).
@@ -503,28 +529,51 @@ jobs:
       - name: Unit tests (editor, actors, authored worlds)
         # Tests that read the authored Shores/Emberfall worlds are gated on
         # `local-sim` (dev/QA simulation, never a shipped set); this variant
-        # is the only place they run.
+        # is the only place they run. Two legs split its one libtest list by
+        # name, each in one process on one thread: editor-a runs the tests
+        # whose names contain an EDITOR_SPLIT entry and editor-b skips exactly
+        # those, so together they run every test once.
+        if: ${{ matrix.leg == 'editor-a' || matrix.leg == 'editor-b' }}
+        env:
+          EDITOR_LEG: ${{ matrix.leg }}
+          EDITOR_SPLIT: "games::projectag::editor_publish:: games::projectag::play:: games::projectag::edit:: games::projectag::content_studio::"
         run: |
+          set -euo pipefail
+          read -ra split <<< "$EDITOR_SPLIT"
+          skips=()
+          for name in "${split[@]}"; do skips+=(--skip "$name"); done
           # Client test worlds share the process-wide origin used by editor fixtures.
-          cargo test -p projectag-client --features projectag-editor,local-sim,engine-test-support --lib -- --test-threads=1
-          cargo test -p actors-client --features engine-test-support --lib
+          if [ "$EDITOR_LEG" = editor-a ]; then
+            cargo test -p projectag-client --features projectag-editor,local-sim,engine-test-support --lib -- --test-threads=1 "${split[@]}"
+            cargo test -p actors-client --features engine-test-support --lib
+          else
+            cargo test -p projectag-client --features projectag-editor,local-sim,engine-test-support --lib -- --test-threads=1 "${skips[@]}"
+          fi
       - name: Unit tests (play-test helper grant, cancellation, and install root)
+        if: ${{ matrix.leg == 'shipped' }}
         run: |
           cargo test -p projectag-client --features projectag-editor,qa-harness,engine-test-support --lib -- --test-threads=1 playtest_helper::tests::
       - name: Unit tests (helper offline redemption)
+        if: ${{ matrix.leg == 'shipped' }}
         run: cargo test -p projectag-client --features gm-playtest-helper,engine-test-support --lib -- --test-threads=1 draft_child_rejects_bad_mode_isolation_and_offline_redemption
       - name: Unit tests (editor save readback and stair landings)
+        if: ${{ matrix.leg == 'shipped' }}
         run: cargo test -p projectag-client --features engine-test-support,qa-harness,projectag-editor --lib -- --test-threads=1 readback_and_landing
       - name: Unit tests (editor publication under qa-harness)
+        if: ${{ matrix.leg == 'shipped' }}
         run: |
           cargo test -p projectag-client --features projectag-editor,local-sim,engine-test-support,qa-harness --lib -- --test-threads=1 games::projectag::qa::tests:: editor_fix_scenarios_read_existing_state_paths
       - name: Unit tests (creator body-armor fixture)
+        if: ${{ matrix.leg == 'shipped' }}
         run: cargo test -p projectag-client --features local-sim,engine-test-support,qa-harness --lib -- --test-threads=1 creator_body_armor_fixture_requires_the_qa_session_and_release
       - name: Unit tests (QA window flags)
+        if: ${{ matrix.leg == 'checks' }}
         run: cargo test -p projectag-client --features engine-test-support,qa-harness --lib -- --test-threads=1 app::qa::tests
       - name: Unit tests (character creator probes)
+        if: ${{ matrix.leg == 'checks' }}
         run: cargo test -p projectag-client --features engine-test-support,qa-harness --lib -- --test-threads=1 games::projectag::character_creator::probe::tests
       - name: Backend product dependency and routing boundaries
+        if: ${{ matrix.leg == 'checks' }}
         # The compile check omits the hosted-admission feature: Actions swaps
         # its native crate for an empty stub (scripts/vendor-pack.py), so it
         # cannot compile here. backend/Dockerfile builds it from the real
@@ -544,8 +593,10 @@ jobs:
           cargo test --manifest-path backend/Cargo.toml -p config-service --no-default-features --features actors
           cargo test --manifest-path backend/Cargo.toml -p live-ingest-service -- transport_tests::transport_loss_and_verified_room_replacement --exact
       - name: Shipped service image leaves hosted admission off
+        if: ${{ matrix.leg == 'checks' }}
         run: python3 scripts/ci-hosted-admission-guards.py
       - name: Shared backend infrastructure
+        if: ${{ matrix.leg == 'checks' }}
         run: |
           cargo test --locked --manifest-path backend/Cargo.toml -p projectag-playtest-package --lib
           cargo test --manifest-path backend/Cargo.toml -p actors360-common --features projectag-web
@@ -553,10 +604,13 @@ jobs:
           cargo test --manifest-path backend/Cargo.toml -p runtime-diagnostics --features diagnostics-system
           cargo test --manifest-path backend/Cargo.toml -p identity-policy --features server-reservations
       - name: Shared-core authority tests
+        if: ${{ matrix.leg == 'authority' }}
         run: cargo test --manifest-path backend/Cargo.toml -p projectag-core --features authority,schema
       - name: Shared-core client world 7 slot
+        if: ${{ matrix.leg == 'authority' }}
         run: cargo test --manifest-path backend/Cargo.toml -p projectag-core --test authored_geometry world7_uses_the_map_spawn_and_legacy_arrival_stays_put -- --exact
       - name: Service and shard fixture suites
+        if: ${{ matrix.leg == 'authority' }}
         timeout-minutes: 45
         run: |
           cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check \
@@ -565,11 +619,18 @@ jobs:
             --id backend.api-gateway
 
   backend:
-    name: backend (isolated PostgreSQL harnesses)
+    # Two parallel legs: the harnesses and the scenario runs. Setup steps run
+    # in both, each check step names its leg, and each leg uploads its
+    # evidence for job `evidence` to merge.
+    name: backend ${{ matrix.leg }} (isolated PostgreSQL harnesses)
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' || github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [harnesses, scenarios]
     env:
       GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
       # Debug service binaries on a shared runner take longer than the 12 s
@@ -608,12 +669,16 @@ jobs:
       - name: Harness tools present
         run: command -v initdb pg_ctl createdb psql
       - name: Harmony product boundary
+        if: ${{ matrix.leg == 'harnesses' }}
         run: cargo test --locked --manifest-path backend/Cargo.toml -p harmony -p harmony-web
       - name: Exchange harness (bank, mail, trade receipts)
+        if: ${{ matrix.leg == 'harnesses' }}
         run: cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa backend exchange --output "$RUNNER_TEMP/qa-backend/exchange"
       - name: Environment harness (service, shards, live socket)
+        if: ${{ matrix.leg == 'harnesses' }}
         run: cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa backend environment --output "$RUNNER_TEMP/qa-backend/environment"
       - name: Accounts and ranking scenarios (web accounts, rankings, playtime)
+        if: ${{ matrix.leg == 'scenarios' }}
         # Sequential on purpose: the ranking and exchange scripts both bind
         # loopback port 55441. items.delivery.audit runs in qa-periodic.
         run: |
@@ -644,6 +709,7 @@ jobs:
           sys.exit(1 if failed else 0)
           PY
       - name: Registered service database boundaries
+        if: ${{ matrix.leg == 'harnesses' }}
         timeout-minutes: 90
         run: |
           cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check \
@@ -655,6 +721,7 @@ jobs:
             --id backend.projectag-shores-migration \
             --id backend.projectag-authority-lifecycle
       - name: Corpse linger driver assertions
+        if: ${{ matrix.leg == 'harnesses' }}
         timeout-minutes: 15
         # combat.corpse-linger itself runs in qa-periodic.
         # These portable driver tests do not establish the authenticated journey.
@@ -681,7 +748,8 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
-          name: projectag-qa-backend-evidence
+          # Job `evidence` merges the legs into projectag-qa-backend-evidence.
+          name: projectag-qa-backend-evidence-${{ matrix.leg }}
           path: ${{ runner.temp }}/qa-backend/**
           if-no-files-found: warn
           retention-days: 14
@@ -691,15 +759,27 @@ jobs:
     # Product assertions and fixture failures must fail this job. Semantic
     # image review remains an explicit blocked result until QA Vision reviews
     # the captured pixels; the non-strict runner permits that review handoff.
-    name: client (software adapter, hosted animation + fixtures)
+    # Four parallel shards of one job: each runs its own scenario step, shard 4
+    # also the Caddy check and the fixture suites, and each uploads its
+    # evidence for job `evidence` to merge. needs.client.result is success
+    # only when every shard passed. Each shard pays one cold client build and
+    # the first hosted scenario one fixture backend build, so shard 3 holds
+    # every `backend = "isolated"` scenario; rebalance from the per-scenario
+    # duration_ms in the shards' qa-report.json.
+    name: client ${{ matrix.shard }}/4 (software adapter, hosted animation + fixtures)
     needs: changes
     if: ${{ needs.changes.outputs.client == 'true' || github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     outputs:
       # Keep the individual fixture result because fixtures produce PNGs,
       # not scenario reports. A panic also fails the overall client job.
-      fixtures_outcome: ${{ steps.fixtures.outcome }}
+      # Only shard 4 runs them; the other shards leave this output unset.
+      fixtures_outcome: ${{ matrix.shard == 4 && steps.fixtures.outcome || '' }}
     env:
       GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
       WGPU_BACKEND: vulkan
@@ -784,6 +864,7 @@ jobs:
       - name: QA doctor
         run: cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa doctor --json
       - name: Hosted map through real Caddy
+        if: ${{ matrix.shard == 4 }}
         run: python3 scripts/test-hosted-map-caddy.py
       - name: Build isolated hosted fixture services
         # Keep these available when the scenario runner reuses a client via
@@ -795,18 +876,57 @@ jobs:
             -p api-gateway --bin api-gateway \
             -p projectag-service --bin projectag-service \
             -p projectag-request-signing --bin sign-fixture-request
-      - name: Client harness scenarios
+      - name: Client harness scenarios (shard 1)
+        # Shard 1 of the maintained selection; the four shard steps together
+        # run every scenario once.
+        if: ${{ matrix.shard == 1 }}
         run: |
           set -euo pipefail
           # qa-hosted-client.py refuses to start without TMPDIR; runners leave it unset.
           export TMPDIR="$RUNNER_TEMP"
           cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json \
             --output "$RUNNER_TEMP/qa-client" \
-            harness.selftest.click-roundtrip windows.bag.open-close windows.spellbook-icon chat.input.focus-type windows.creator-female-appearance windows.creator-female-armor windows.patchnotes-desktop recovery.update-handoff-desktop recovery.maintenance-notice-desktop movement.creator-female-walk movement.hosted-animation-manifest identity.second-factor-login movement.touch.phone-camera-actions movement.touch.phone-fit movement.touch.browser-phone movement.touch.dock-controls movement.touch.tablet-hud movement.touch.desktop-unchanged combat.target-frame-desktop combat.target-frame-compact npc-quest.dialogue-text-wrap windows.text-fit-sweep world-content.editor-return \
+            harness.selftest.click-roundtrip windows.bag.open-close windows.creator-female-armor windows.patchnotes-desktop movement.touch.phone-camera-actions movement.touch.phone-fit movement.touch.browser-phone movement.touch.tablet-hud movement.touch.desktop-unchanged \
+            | tee "$RUNNER_TEMP/qa-client-run.json"
+      - name: Client harness scenarios (shard 2)
+        # Shard 2 of the maintained selection; the four shard steps together
+        # run every scenario once.
+        if: ${{ matrix.shard == 2 }}
+        run: |
+          set -euo pipefail
+          # qa-hosted-client.py refuses to start without TMPDIR; runners leave it unset.
+          export TMPDIR="$RUNNER_TEMP"
+          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json \
+            --output "$RUNNER_TEMP/qa-client" \
+            windows.spellbook-icon chat.input.focus-type windows.creator-female-appearance recovery.update-handoff-desktop recovery.maintenance-notice-desktop movement.creator-female-walk movement.touch.dock-controls \
+            | tee "$RUNNER_TEMP/qa-client-run.json"
+      - name: Client harness scenarios (shard 3)
+        # Shard 3 of the maintained selection; the four shard steps together
+        # run every scenario once.
+        if: ${{ matrix.shard == 3 }}
+        run: |
+          set -euo pipefail
+          # qa-hosted-client.py refuses to start without TMPDIR; runners leave it unset.
+          export TMPDIR="$RUNNER_TEMP"
+          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json \
+            --output "$RUNNER_TEMP/qa-client" \
+            movement.hosted-animation-manifest identity.second-factor-login combat.target-frame-desktop combat.target-frame-compact npc-quest.dialogue-text-wrap \
+            | tee "$RUNNER_TEMP/qa-client-run.json"
+      - name: Client harness scenarios (shard 4)
+        # Shard 4 of the maintained selection; the four shard steps together
+        # run every scenario once.
+        if: ${{ matrix.shard == 4 }}
+        run: |
+          set -euo pipefail
+          # qa-hosted-client.py refuses to start without TMPDIR; runners leave it unset.
+          export TMPDIR="$RUNNER_TEMP"
+          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json \
+            --output "$RUNNER_TEMP/qa-client" \
+            windows.text-fit-sweep world-content.editor-return \
             | tee "$RUNNER_TEMP/qa-client-run.json"
       - name: Fixture PNG suites
         id: fixtures
-        if: ${{ always() }}
+        if: ${{ always() && matrix.shard == 4 }}
         run: xvfb-run -a cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa fixtures --output "$RUNNER_TEMP/qa-fixtures"
       - name: Stage public client evidence
         if: ${{ always() }}
@@ -827,12 +947,13 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
-          name: projectag-qa-linux-evidence
+          # Job `evidence` merges the shards into projectag-qa-linux-evidence.
+          name: projectag-qa-linux-evidence-${{ matrix.shard }}
           path: ${{ runner.temp }}/qa-client-public/**
           if-no-files-found: warn
           retention-days: 14
       - name: Upload fixture renders
-        if: ${{ always() }}
+        if: ${{ always() && matrix.shard == 4 }}
         uses: actions/upload-artifact@v7
         with:
           name: projectag-qa-fixtures
@@ -952,11 +1073,42 @@ jobs:
       - name: Voice I/O callback ordering
         run: bash mobile/ios/voice-io-race/run.sh
 
+  evidence:
+    # The client shards and backend legs upload their evidence under per-leg
+    # names. This job merges each family back into the one artifact the report
+    # job, QA Vision and agents download: projectag-qa-linux-evidence holds one
+    # directory per shard, each with its own qa-report.json, and
+    # projectag-qa-backend-evidence keeps the single-job layout because the
+    # backend legs write disjoint directories.
+    name: merge QA evidence
+    needs: [backend, client]
+    if: ${{ !cancelled() && (needs.backend.result != 'skipped' || needs.client.result != 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Merge client evidence
+        if: ${{ needs.client.result != 'skipped' }}
+        uses: actions/upload-artifact/merge@v7
+        with:
+          name: projectag-qa-linux-evidence
+          pattern: projectag-qa-linux-evidence-*
+          separate-directories: true
+          delete-merged: true
+          retention-days: 14
+      - name: Merge backend evidence
+        if: ${{ !cancelled() && needs.backend.result != 'skipped' }}
+        uses: actions/upload-artifact/merge@v7
+        with:
+          name: projectag-qa-backend-evidence
+          pattern: projectag-qa-backend-evidence-*
+          delete-merged: true
+          retention-days: 14
+
   master-gate:
     # One result per master commit, which `agx ci status` and the CI watcher
     # read. A deploy requires master-packages instead (github::require_green).
     name: master gate
-    needs: [changes, static, core, backend, client, windows-owned-files, ios-voice-io-race, api-gateway-live-spacing]
+    needs: [changes, static, core, backend, client, windows-owned-files, ios-voice-io-race, api-gateway-live-spacing, evidence]
     if: ${{ always() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -972,7 +1124,7 @@ jobs:
 
   report:
     name: report to Paperclip
-    needs: [changes, static, core, backend, client, windows-owned-files, ios-voice-io-race, api-gateway-live-spacing]
+    needs: [changes, static, core, backend, client, windows-owned-files, ios-voice-io-race, api-gateway-live-spacing, evidence]
     # Master pushes have no Paperclip issue; `master gate` reports them.
     if: ${{ always() && github.event_name != 'push' }}
     runs-on: ubuntu-latest
@@ -985,7 +1137,7 @@ jobs:
       # This is the automation gate into review, not final visual acceptance.
       # A product assertion, harness error or fixture panic fails the gate.
       PAPERCLIP_QA_RESULT: ${{ (needs.changes.result == 'success' && needs.static.result == 'success' && ((github.event_name != 'pull_request' && needs.core.result == 'success' && needs.backend.result == 'success' && needs.client.result == 'success' && needs.windows-owned-files.result == 'success' && needs.ios-voice-io-race.result == 'success' && needs.api-gateway-live-spacing.result == 'success') || (github.event_name == 'pull_request' && (needs.core.result == 'success' || (needs.core.result == 'skipped' && needs.changes.outputs.rust == 'false')) && (needs.backend.result == 'success' || (needs.backend.result == 'skipped' && needs.changes.outputs.backend == 'false')) && (needs.client.result == 'success' || (needs.client.result == 'skipped' && needs.changes.outputs.client == 'false')) && (needs.windows-owned-files.result == 'success' || (needs.windows-owned-files.result == 'skipped' && needs.changes.outputs.client == 'false')) && (needs.ios-voice-io-race.result == 'success' || (needs.ios-voice-io-race.result == 'skipped' && needs.changes.outputs.client == 'false')) && (needs.api-gateway-live-spacing.result == 'success' || (needs.api-gateway-live-spacing.result == 'skipped' && needs.changes.outputs.backend == 'false'))))) && 'success' || 'failure' }}
-      PAPERCLIP_QA_JOBS: changes=${{ needs.changes.result }} static=${{ needs.static.result }} core=${{ needs.core.result }} backend=${{ needs.backend.result }} client=${{ needs.client.result }} windows-owned-files=${{ needs.windows-owned-files.result }} ios-voice-io-race=${{ needs.ios-voice-io-race.result }} api-gateway-live-spacing=${{ needs.api-gateway-live-spacing.result }} client-fixtures=${{ needs.client.outputs.fixtures_outcome || 'not run' }}
+      PAPERCLIP_QA_JOBS: changes=${{ needs.changes.result }} static=${{ needs.static.result }} core=${{ needs.core.result }} backend=${{ needs.backend.result }} client=${{ needs.client.result }} windows-owned-files=${{ needs.windows-owned-files.result }} ios-voice-io-race=${{ needs.ios-voice-io-race.result }} api-gateway-live-spacing=${{ needs.api-gateway-live-spacing.result }} evidence=${{ needs.evidence.result }} client-fixtures=${{ needs.client.outputs.fixtures_outcome || 'not run' }}
       PAPERCLIP_QA_REQUIRED_ARTIFACTS: ${{ format('{0} {1}', needs.client.result != 'skipped' && 'projectag-qa-linux-evidence' || '', needs.backend.result != 'skipped' && 'projectag-qa-backend-evidence' || '') }}
       PAPERCLIP_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       PAPERCLIP_PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
