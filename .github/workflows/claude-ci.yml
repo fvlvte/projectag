@@ -34,14 +34,28 @@ jobs:
         with:
           fetch-depth: 1
       - name: prepare runner
+        timeout-minutes: 25
         run: |
-          {
-            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq git-crypt age zstd jq pkg-config libssl-dev cmake clang lld llvm nasm \
-              libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-0 libx11-dev libxi-dev \
-              libxcursor-dev libxrandr-dev libgl1-mesa-dev
-          } > /dev/null 2>&1
+          # Install only what the image lacks; bounded apt with retries and an archive.ubuntu.com fallback
+          # (azure mirror hangs made this step run 36 min and exit 100, 2026-11-11). Log tail on failure.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL > /dev/null 2>&1 || true
+          want="git-crypt age zstd jq pkg-config libssl-dev cmake clang lld llvm nasm libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-0 libx11-dev libxi-dev libxcursor-dev libxrandr-dev libgl1-mesa-dev"
+          missing=$(for p in $want; do dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'install ok installed' || echo "$p"; done | tr '\n' ' ')
+          echo "missing: ${missing:-none}"
+          [ -z "${missing// }" ] && exit 0
+          A="-o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o DPkg::Lock::Timeout=120"
+          log="$RUNNER_TEMP/apt.log"
+          try() { timeout 120 sudo apt-get $A update -qq >> "$log" 2>&1; timeout 480 sudo apt-get $A install -y -qq $missing >> "$log" 2>&1; }
+          try && exit 0
+          echo "apt attempt 1 failed; switching to archive.ubuntu.com"
+          sudo sed -i \
+            -e 's#http://azure.archive.ubuntu.com#https://archive.ubuntu.com#g' \
+            -e 's#https://azure.archive.ubuntu.com#https://archive.ubuntu.com#g' \
+            -e 's#http://security.ubuntu.com#https://archive.ubuntu.com#g' \
+            -e 's#https://security.ubuntu.com#https://archive.ubuntu.com#g' \
+            /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
+          try && exit 0
+          echo "apt failed twice; last log lines:"; tail -40 "$log"; exit 100
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.99.1"
@@ -116,7 +130,17 @@ jobs:
           fetch-depth: 1
       - name: prepare runner
         run: |
-          { sudo apt-get update -qq; sudo apt-get install -y -qq git-crypt; } > /dev/null 2>&1
+          A="-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o DPkg::Lock::Timeout=120"; log="$RUNNER_TEMP/apt.log"
+          try() { timeout 300 sudo apt-get $A update -qq >> "$log" 2>&1; timeout 300 sudo apt-get $A install -y -qq git-crypt >> "$log" 2>&1; }
+          try && exit 0
+          sudo sed -i \
+            -e 's#http://azure.archive.ubuntu.com#https://archive.ubuntu.com#g' \
+            -e 's#https://azure.archive.ubuntu.com#https://archive.ubuntu.com#g' \
+            -e 's#http://security.ubuntu.com#https://archive.ubuntu.com#g' \
+            -e 's#https://security.ubuntu.com#https://archive.ubuntu.com#g' \
+            /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
+          try && exit 0
+          echo "apt failed twice; last log lines:"; tail -40 "$log"; exit 100
       - name: pack
         env:
           GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
