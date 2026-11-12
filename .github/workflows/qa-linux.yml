@@ -754,6 +754,115 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  client-bins:
+    # One release engine per feature set for this commit. The client shards
+    # install the artifacts and pass --no-build, so a scenario does not invoke
+    # cargo build --bin engine again. The editor feature set is a second
+    # binary; shard 4 swaps it in only for world-content.editor-return.
+    # prefix-key matches the client shards so this restore is the warm cache
+    # those shards already fill. A separate key would compile cold.
+    name: client bins ${{ matrix.name }}
+    needs: changes
+    if: ${{ needs.changes.outputs.client == 'true' || github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: engine
+            editor: "0"
+          - name: engine-editor
+            editor: "1"
+    env:
+      GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
+      CLIENT_BIN_EDITOR: ${{ matrix.editor }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Free disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: Install compile dependencies
+        # Link libraries only. The runtime xkbcommon/X11 package, xvfb, Mesa
+        # and PostgreSQL stay on the client shards, which are what execute.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-crypt pkg-config libssl-dev cmake clang lld llvm nasm \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev \
+            libx11-dev libxi-dev \
+            libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev libvulkan-dev
+      - name: Unlock git-crypt
+        run: |
+          test -n "${GITCRYPT_KEY_B64}" || { echo "Add repository secret GITCRYPT_KEY_B64"; exit 1; }
+          bash .github/scripts/git-crypt-unlock.sh
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+      - uses: Swatinem/rust-cache@v2
+        continue-on-error: true
+        with:
+          workspaces: |
+            . -> target
+            tools/agx -> target
+            backend -> target
+          prefix-key: qa-linux-client
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Build release engine once
+        env:
+          # Same process environment prepare_engine passes to cargo build.
+          PROJECTAG_DEFAULT_API: "off"
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+          BEVY_ASSET_ROOT: ${{ github.workspace }}
+          CARGO_MANIFEST_DIR: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ "${CLIENT_BIN_EDITOR}" != "0" ] && [ "${CLIENT_BIN_EDITOR}" != "1" ]; then
+            echo "client engine matrix editor flag must be 0 or 1"
+            exit 1
+          fi
+          # Same set prepare_engine compiles: LOCAL_BASE plus qa-harness, with
+          # the public-log feature filter in features.rs applied. The editor
+          # leg appends projectag-editor. The literals stay in that source so
+          # this file does not grow a second copy.
+          features="$(python3 - <<'PY'
+          import pathlib, re
+          text = pathlib.Path("tools/agx/src/features.rs").read_text()
+          local = re.search(r'pub const LOCAL_BASE: &str = "([^"]+)"', text).group(1)
+          dropped = re.search(r'\*part != "([^"]+)"', text).group(1)
+          parts = [part.strip() for part in local.split(",") if part.strip() and part.strip() != dropped]
+          parts.append("qa-harness")
+          print(",".join(parts), end="")
+          PY
+          )"
+          if [ "${CLIENT_BIN_EDITOR}" = "1" ]; then
+            features="${features},projectag-editor"
+          fi
+          test -n "${features}"
+          cargo build --manifest-path "$GITHUB_WORKSPACE/Cargo.toml" \
+            --release --features "$features" --bin engine
+          test -x "$CARGO_TARGET_DIR/release/engine"
+          install -m 755 "$CARGO_TARGET_DIR/release/engine" "$RUNNER_TEMP/engine"
+          {
+            printf 'commit=%s\n' "$GITHUB_SHA"
+            printf 'features=%s\n' "$features"
+            printf 'profile=%s\n' release
+            printf 'bin=%s\n' engine
+          } > "$RUNNER_TEMP/engine-manifest.txt"
+      - name: Upload release engine
+        uses: actions/upload-artifact@v7
+        with:
+          # Commit in the name, feature set in the manifest. One day is enough:
+          # only the client shards of this run download it.
+          name: projectag-qa-client-bin-${{ matrix.name }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/engine
+            ${{ runner.temp }}/engine-manifest.txt
+          if-no-files-found: error
+          retention-days: 1
+
   client:
     # Software-adapter client harness (xvfb + Mesa lavapipe).
     # Product assertions and fixture failures must fail this job. Semantic
@@ -762,12 +871,14 @@ jobs:
     # Four parallel shards of one job: each runs its own scenario step, shard 4
     # also the Caddy check and the fixture suites, and each uploads its
     # evidence for job `evidence` to merge. needs.client.result is success
-    # only when every shard passed. Each shard pays one cold client build and
-    # the first hosted scenario one fixture backend build, so shard 3 holds
-    # every `backend = "isolated"` scenario; rebalance from the per-scenario
-    # duration_ms in the shards' qa-report.json.
+    # only when every shard passed. client-bins builds each release engine
+    # once; these shards install that binary and pass --no-build. Shard 4
+    # swaps in the editor binary only for world-content.editor-return. Shard 3
+    # holds every `backend = "isolated"` scenario and prebuilds the hosted
+    # services and combat probes those scenarios reuse; rebalance from the
+    # per-scenario duration_ms in the shards' qa-report.json.
     name: client ${{ matrix.shard }}/4 (software adapter, hosted animation + fixtures)
-    needs: changes
+    needs: [changes, client-bins]
     if: ${{ needs.changes.outputs.client == 'true' || github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -854,6 +965,68 @@ jobs:
           prefix-key: qa-linux-client
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Download release engines
+        uses: actions/download-artifact@v8
+        with:
+          pattern: projectag-qa-client-bin-*-${{ github.sha }}
+          path: ${{ runner.temp }}/qa-client-bins
+      - name: Install shared release engine
+        # After the cache restore, so a restored target directory cannot
+        # replace the engine this run just built.
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/qa-client-bins"
+          dest="${GITHUB_WORKSPACE}/target/release"
+          mkdir -p "$dest"
+          plain="$(python3 - <<'PY'
+          import pathlib, re
+          text = pathlib.Path("tools/agx/src/features.rs").read_text()
+          local = re.search(r'pub const LOCAL_BASE: &str = "([^"]+)"', text).group(1)
+          dropped = re.search(r'\*part != "([^"]+)"', text).group(1)
+          parts = [part.strip() for part in local.split(",") if part.strip() and part.strip() != dropped]
+          parts.append("qa-harness")
+          print(",".join(parts), end="")
+          PY
+          )"
+          editor="${plain},projectag-editor"
+          found_plain=0
+          found_editor=0
+          found_any=0
+          while IFS= read -r manifest; do
+            if [ -z "$manifest" ]; then
+              continue
+            fi
+            found_any=1
+            commit="$(sed -n 's/^commit=//p' "$manifest")"
+            features="$(sed -n 's/^features=//p' "$manifest")"
+            profile="$(sed -n 's/^profile=//p' "$manifest")"
+            bin="$(sed -n 's/^bin=//p' "$manifest")"
+            dir="$(dirname "$manifest")"
+            if [ "$commit" != "$GITHUB_SHA" ] || [ "$profile" != "release" ] || [ "$bin" != "engine" ]; then
+              echo "client engine manifest does not match this run"
+              exit 1
+            fi
+            if [ ! -f "$dir/$bin" ]; then
+              echo "client engine binary is missing beside its manifest"
+              exit 1
+            fi
+            if [ "$features" = "$plain" ]; then
+              install -m 755 "$dir/$bin" "$dest/engine"
+              found_plain=1
+            elif [ "$features" = "$editor" ]; then
+              install -m 755 "$dir/$bin" "$RUNNER_TEMP/qa-client-engine-editor"
+              found_editor=1
+            else
+              echo "client engine manifest has an unexpected feature set"
+              exit 1
+            fi
+          done < <(find "$root" -name engine-manifest.txt -type f | sort)
+          if [ "$found_any" != 1 ] || [ "$found_plain" != 1 ] || [ "$found_editor" != 1 ]; then
+            echo "client engine artifacts are incomplete"
+            exit 1
+          fi
+          test -x "$dest/engine"
+          test -x "$RUNNER_TEMP/qa-client-engine-editor"
       - name: Software Vulkan adapter present
         run: |
           test -n "${VK_ICD_FILENAMES:-}"
@@ -869,6 +1042,11 @@ jobs:
       - name: Build isolated hosted fixture services
         # Keep these available when the scenario runner reuses a client via
         # --no-build; the fixture never connects to another developer server.
+        # Shard 3's hosted launcher builds these at opt-level 3 when it is
+        # allowed to compile. --no-build uses whatever is already in
+        # target/debug, so that shard compiles them once at opt-level 3 here.
+        env:
+          CARGO_PROFILE_DEV_OPT_LEVEL: ${{ matrix.shard == 3 && '3' || '0' }}
         run: |
           command -v initdb pg_ctl createdb psql python3
           cargo build --locked --manifest-path backend/Cargo.toml \
@@ -876,6 +1054,18 @@ jobs:
             -p api-gateway --bin api-gateway \
             -p projectag-service --bin projectag-service \
             -p projectag-request-signing --bin sign-fixture-request
+      - name: Build combat fixture probes
+        # combat-abilities, with --no-build, requires content-check and
+        # qa-combat-arena. The hosted launcher compiles both at opt-level 3
+        # and writes the example under backend/target/debug/examples.
+        if: ${{ matrix.shard == 3 }}
+        env:
+          CARGO_PROFILE_DEV_OPT_LEVEL: "3"
+        run: |
+          set -euo pipefail
+          cargo build --locked --manifest-path backend/Cargo.toml \
+            -p projectag-core --features authority \
+            --bin content-check --example qa-combat-arena
       - name: Client harness scenarios (shard 1)
         # Shard 1 of the maintained selection; the four shard steps together
         # run every scenario once.
@@ -884,7 +1074,7 @@ jobs:
           set -euo pipefail
           # qa-hosted-client.py refuses to start without TMPDIR; runners leave it unset.
           export TMPDIR="$RUNNER_TEMP"
-          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json \
+          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --no-build --json \
             --output "$RUNNER_TEMP/qa-client" \
             harness.selftest.click-roundtrip windows.bag.open-close windows.creator-female-armor windows.patchnotes-desktop movement.touch.phone-camera-actions movement.touch.phone-fit movement.touch.browser-phone movement.touch.tablet-hud movement.touch.desktop-unchanged \
             | tee "$RUNNER_TEMP/qa-client-run.json"
@@ -896,7 +1086,7 @@ jobs:
           set -euo pipefail
           # qa-hosted-client.py refuses to start without TMPDIR; runners leave it unset.
           export TMPDIR="$RUNNER_TEMP"
-          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json \
+          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --no-build --json \
             --output "$RUNNER_TEMP/qa-client" \
             windows.spellbook-icon chat.input.focus-type windows.creator-female-appearance recovery.update-handoff-desktop recovery.maintenance-notice-desktop movement.creator-female-walk movement.touch.dock-controls \
             | tee "$RUNNER_TEMP/qa-client-run.json"
@@ -908,21 +1098,42 @@ jobs:
           set -euo pipefail
           # qa-hosted-client.py refuses to start without TMPDIR; runners leave it unset.
           export TMPDIR="$RUNNER_TEMP"
-          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json \
+          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --no-build --json \
             --output "$RUNNER_TEMP/qa-client" \
             movement.hosted-animation-manifest identity.second-factor-login combat.target-frame-desktop combat.target-frame-compact npc-quest.dialogue-text-wrap \
             | tee "$RUNNER_TEMP/qa-client-run.json"
       - name: Client harness scenarios (shard 4)
-        # Shard 4 of the maintained selection; the four shard steps together
-        # run every scenario once.
+        # Non-editor half of shard 4. world-content.editor-return is the next
+        # step: one target/release/engine cannot hold both feature sets, and a
+        # second qa run cannot reuse this output directory.
         if: ${{ matrix.shard == 4 }}
         run: |
           set -euo pipefail
           # qa-hosted-client.py refuses to start without TMPDIR; runners leave it unset.
           export TMPDIR="$RUNNER_TEMP"
-          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json \
+          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --no-build --json \
             --output "$RUNNER_TEMP/qa-client" \
-            windows.text-fit-sweep world-content.editor-return \
+            windows.text-fit-sweep \
+            | tee "$RUNNER_TEMP/qa-client-run.json"
+      - name: Install editor engine
+        if: ${{ matrix.shard == 4 }}
+        run: |
+          set -euo pipefail
+          if [ -f "$RUNNER_TEMP/qa-client-run.json" ]; then
+            mv "$RUNNER_TEMP/qa-client-run.json" "$RUNNER_TEMP/qa-client-run-text-fit.json"
+          fi
+          install -m 755 "$RUNNER_TEMP/qa-client-engine-editor" "$GITHUB_WORKSPACE/target/release/engine"
+          test -x "$GITHUB_WORKSPACE/target/release/engine"
+      - name: Client harness scenarios (shard 4 editor)
+        # Editor feature set only. A separate output directory: qa run refuses
+        # a directory that already holds the text-fit report.
+        if: ${{ matrix.shard == 4 }}
+        run: |
+          set -euo pipefail
+          export TMPDIR="$RUNNER_TEMP"
+          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --no-build --json \
+            --output "$RUNNER_TEMP/qa-client-editor" \
+            world-content.editor-return \
             | tee "$RUNNER_TEMP/qa-client-run.json"
       - name: Fixture PNG suites
         id: fixtures
@@ -940,8 +1151,19 @@ jobs:
               ! -ipath '*/data/*' ! -iname 'fixture.json' -print0 \
               | cpio --null --pass-through --make-directories --quiet "$stage")
           fi
-          if [ -f "$RUNNER_TEMP/qa-client-run.json" ]; then
+          if [ -f "$RUNNER_TEMP/qa-client-run-text-fit.json" ]; then
+            cp "$RUNNER_TEMP/qa-client-run-text-fit.json" "$stage/qa-client-run.json"
+          elif [ -f "$RUNNER_TEMP/qa-client-run.json" ]; then
             cp "$RUNNER_TEMP/qa-client-run.json" "$stage/qa-client-run.json"
+          fi
+          if [ -d "$RUNNER_TEMP/qa-client-editor" ]; then
+            mkdir -p "$stage/editor"
+            (cd "$RUNNER_TEMP/qa-client-editor" && find . -type f -links 1 \
+              ! -ipath '*/data/*' ! -iname 'fixture.json' -print0 \
+              | cpio --null --pass-through --make-directories --quiet "$stage/editor")
+            if [ -f "$RUNNER_TEMP/qa-client-run.json" ]; then
+              cp "$RUNNER_TEMP/qa-client-run.json" "$stage/editor/qa-client-run.json"
+            fi
           fi
       - name: Upload client evidence
         if: ${{ always() }}
