@@ -1103,9 +1103,8 @@ jobs:
             movement.hosted-animation-manifest identity.second-factor-login combat.target-frame-desktop combat.target-frame-compact npc-quest.dialogue-text-wrap \
             | tee "$RUNNER_TEMP/qa-client-run.json"
       - name: Client harness scenarios (shard 4)
-        # Non-editor half of shard 4. world-content.editor-return is the next
-        # step: one target/release/engine cannot hold both feature sets, and a
-        # second qa run cannot reuse this output directory.
+        # Non-editor half of shard 4. The install step moves this output aside
+        # so the editor scenario can reuse qa-client with the other engine.
         if: ${{ matrix.shard == 4 }}
         run: |
           set -euo pipefail
@@ -1119,20 +1118,24 @@ jobs:
         if: ${{ matrix.shard == 4 }}
         run: |
           set -euo pipefail
+          if [ -d "$RUNNER_TEMP/qa-client" ]; then
+            rm -rf "$RUNNER_TEMP/qa-client-text-fit"
+            mv "$RUNNER_TEMP/qa-client" "$RUNNER_TEMP/qa-client-text-fit"
+          fi
           if [ -f "$RUNNER_TEMP/qa-client-run.json" ]; then
             mv "$RUNNER_TEMP/qa-client-run.json" "$RUNNER_TEMP/qa-client-run-text-fit.json"
           fi
           install -m 755 "$RUNNER_TEMP/qa-client-engine-editor" "$GITHUB_WORKSPACE/target/release/engine"
           test -x "$GITHUB_WORKSPACE/target/release/engine"
       - name: Client harness scenarios (shard 4 editor)
-        # Editor feature set only. A separate output directory: qa run refuses
-        # a directory that already holds the text-fit report.
+        # Editor feature set only. Same qa-client path as the other shards:
+        # the execution gate reads qa-client/qa-report.json from every script.
         if: ${{ matrix.shard == 4 }}
         run: |
           set -euo pipefail
           export TMPDIR="$RUNNER_TEMP"
           cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --no-build --json \
-            --output "$RUNNER_TEMP/qa-client-editor" \
+            --output "$RUNNER_TEMP/qa-client" \
             world-content.editor-return \
             | tee "$RUNNER_TEMP/qa-client-run.json"
       - name: Fixture PNG suites
@@ -1146,23 +1149,30 @@ jobs:
           stage="$RUNNER_TEMP/qa-client-public"
           rm -rf "$stage"
           mkdir -p "$stage"
-          if [ -d "$RUNNER_TEMP/qa-client" ]; then
-            (cd "$RUNNER_TEMP/qa-client" && find . -type f -links 1 \
+          if [ -d "$RUNNER_TEMP/qa-client-text-fit" ]; then
+            (cd "$RUNNER_TEMP/qa-client-text-fit" && find . -type f -links 1 \
               ! -ipath '*/data/*' ! -iname 'fixture.json' -print0 \
               | cpio --null --pass-through --make-directories --quiet "$stage")
-          fi
-          if [ -f "$RUNNER_TEMP/qa-client-run-text-fit.json" ]; then
-            cp "$RUNNER_TEMP/qa-client-run-text-fit.json" "$stage/qa-client-run.json"
-          elif [ -f "$RUNNER_TEMP/qa-client-run.json" ]; then
-            cp "$RUNNER_TEMP/qa-client-run.json" "$stage/qa-client-run.json"
-          fi
-          if [ -d "$RUNNER_TEMP/qa-client-editor" ]; then
-            mkdir -p "$stage/editor"
-            (cd "$RUNNER_TEMP/qa-client-editor" && find . -type f -links 1 \
-              ! -ipath '*/data/*' ! -iname 'fixture.json' -print0 \
-              | cpio --null --pass-through --make-directories --quiet "$stage/editor")
+            if [ -f "$RUNNER_TEMP/qa-client-run-text-fit.json" ]; then
+              cp "$RUNNER_TEMP/qa-client-run-text-fit.json" "$stage/qa-client-run.json"
+            fi
+            if [ -d "$RUNNER_TEMP/qa-client" ]; then
+              mkdir -p "$stage/editor"
+              (cd "$RUNNER_TEMP/qa-client" && find . -type f -links 1 \
+                ! -ipath '*/data/*' ! -iname 'fixture.json' -print0 \
+                | cpio --null --pass-through --make-directories --quiet "$stage/editor")
+              if [ -f "$RUNNER_TEMP/qa-client-run.json" ]; then
+                cp "$RUNNER_TEMP/qa-client-run.json" "$stage/editor/qa-client-run.json"
+              fi
+            fi
+          else
+            if [ -d "$RUNNER_TEMP/qa-client" ]; then
+              (cd "$RUNNER_TEMP/qa-client" && find . -type f -links 1 \
+                ! -ipath '*/data/*' ! -iname 'fixture.json' -print0 \
+                | cpio --null --pass-through --make-directories --quiet "$stage")
+            fi
             if [ -f "$RUNNER_TEMP/qa-client-run.json" ]; then
-              cp "$RUNNER_TEMP/qa-client-run.json" "$stage/editor/qa-client-run.json"
+              cp "$RUNNER_TEMP/qa-client-run.json" "$stage/qa-client-run.json"
             fi
           fi
       - name: Upload client evidence
