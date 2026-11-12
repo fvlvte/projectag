@@ -311,6 +311,7 @@ jobs:
           python3 -W error scripts/test_shores_supplied.py
           python3 -B -W error scripts/test_shores_fresh_static.py
           python3 -B -W error scripts/test_shores_fresh_placement.py
+          python3 -W error scripts/test_content_ids.py
       - name: Public PR title and body scan
         if: ${{ github.event_name == 'pull_request' || steps.dispatch_pr.outputs.number }}
         env:
@@ -354,9 +355,33 @@ jobs:
           retention-days: 14
       - name: Content check
         run: cargo run --quiet --manifest-path backend/Cargo.toml -p projectag-core --bin content-check
-      # The suppression and formatting gates run last and even after an
-      # earlier check failed, so one push reports every static result instead
-      # of stopping at the first style slip. They still fail the job.
+      # The ledger, suppression and formatting gates run last and even after
+      # an earlier check failed, so one push reports every static result
+      # instead of stopping at the first style slip. They still fail the job.
+      - name: Content id ledger stays append-only
+        # checkout is fetch-depth 1. On a pull request origin/master is absent,
+        # so merge-base fails; on a master push origin/master is HEAD, so the
+        # comparison is the commit against itself. Either way the old command
+        # exited 0 without comparing a row. Fetch the pull-request base, the
+        # dispatched PR base, or the push's previous tip, and pass it
+        # explicitly. A schedule run has no previous tip: deepen by one and
+        # compare with the parent. The script fails closed when that base
+        # cannot be read. The zero SHA is the previous tip of a newly created
+        # ref, which is not a commit.
+        if: ${{ !cancelled() && steps.unlock.outcome == 'success' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || steps.dispatch_pr.outputs.base_sha || github.event.before }}
+          FETCH_TOKEN: ${{ github.token }}
+        run: |
+          base="${BASE_SHA}"
+          if [ -n "$base" ] && [ "$base" != "0000000000000000000000000000000000000000" ]; then
+            git cat-file -e "$base^{commit}" 2>/dev/null \
+              || git fetch --depth=1 "https://x-access-token:${FETCH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$base"
+            python3 scripts/content_ids.py check-append-only --base "$base"
+          else
+            git fetch --deepen=1 "https://x-access-token:${FETCH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+            python3 scripts/content_ids.py check-append-only --base "HEAD^"
+          fi
       - name: Lint suppression ratchet
         # On pull requests the base commit bounds the baseline, so a change
         # cannot raise its own allowance in the same diff. The bloat step
