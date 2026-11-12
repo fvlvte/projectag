@@ -1,9 +1,12 @@
 # Shippable build packages for every master commit. The release gates run as
 # parallel shards (`gates`, one job per `cargo agx ci shards` entry) beside
-# one job per platform package (`package`). Each job runs
-# `cargo agx ci build <kind>`: the same agx compile or gate function a local
-# release runs, under the commit-derived version (MAJOR.MINOR as committed,
-# BUILD = first-parent count minus committed FAMILY_BASE) and store counter.
+# the platform packages (`package`). macOS is two jobs (`macos-part`): the
+# desktop clients and the play-test helper do not share dist artifacts, so
+# they compile at the same time and `macos-seal` seals the one package deploy
+# downloads. Each build job runs `cargo agx ci build`: the same agx compile
+# or gate function a local release runs, under the commit-derived version
+# (MAJOR.MINOR as committed, BUILD = first-parent count minus committed
+# FAMILY_BASE) and store counter.
 # The `ios` job builds
 # the iOS device archive unsigned; signing stays on the operator Mac.
 # Outputs are sealed with AGX_CI_PACKAGE_KEY before upload: this repository is public, so its
@@ -45,7 +48,7 @@ env:
 jobs:
   gates:
     name: gates ${{ matrix.shard }}
-    if: ${{ github.ref == 'refs/heads/master' }}
+    if: ${{ github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     # A cold cache (new Cargo.lock or toolchain) compiles each build from
     # scratch; the light shard compiles several.
@@ -148,21 +151,73 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh run cancel "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY"
 
+  macos-part:
+    name: macos ${{ matrix.part }}
+    if: ${{ github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch' }}
+    runs-on: macos-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      # Desktop features and gm-playtest-helper do not share dist artifacts.
+      # Both parts restore package-macos; only clients writes it.
+      matrix:
+        include:
+          - part: clients
+            save: true
+          - part: helper
+            save: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Build and store derivation require full first-parent history;
+          # trees are fetched on demand.
+          fetch-depth: 0
+          filter: tree:0
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+
+      - uses: ./.github/actions/agx-package-setup
+        with:
+          gitcrypt-key: ${{ secrets.GITCRYPT_KEY_B64 }}
+          native-key-hex: ${{ secrets.PROJECTAG_NATIVE_SIGNING_KEY_HEX }}
+          package-key: ${{ secrets.AGX_CI_PACKAGE_KEY }}
+          cache-key: package-macos
+          save-cache: ${{ matrix.save }}
+
+      - name: Build and seal the macos ${{ matrix.part }} part
+        env:
+          AGX_CI_PACKAGE_KEY: ${{ secrets.AGX_CI_PACKAGE_KEY }}
+          # Only this step sees the native key; the script writes it for the
+          # one command and deletes it after.
+          NATIVE_KEY_HEX: ${{ secrets.PROJECTAG_NATIVE_SIGNING_KEY_HEX }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/with-native-signing-key.sh cargo agx ci build macos --part "${{ matrix.part }}" --out "$RUNNER_TEMP/package" --run-url "$RUN_URL"
+          ls -l "$RUNNER_TEMP/package"
+
+      - name: Upload the sealed macos part
+        uses: actions/upload-artifact@v7
+        with:
+          name: agx-macos-${{ matrix.part }}-${{ github.sha }}
+          path: ${{ runner.temp }}/package/*.agxci
+          if-no-files-found: error
+          retention-days: 1  # intermediate: only macos-seal reads it
+          compression-level: 0
+
   package:
     name: ${{ matrix.kind }}
-    if: ${{ github.ref == 'refs/heads/master' }}
+    if: ${{ github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 240
     strategy:
       fail-fast: false
-      # iOS has its own macOS runner so it builds in parallel with the macOS
-      # package (owner decision 2026-11-01; 13 jobs).
+      # iOS keeps its own macOS runner (owner decision 2026-11-01) and builds
+      # beside the two macos-part jobs. macos is not a row of this matrix.
       matrix:
         include:
-          - kind: macos
-            os: macos-latest
-            targets: ""
-            workspaces: ""
           - kind: ios
             os: macos-latest
             targets: aarch64-apple-ios
@@ -272,6 +327,94 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: agx-${{ matrix.kind }}-${{ github.sha }}
+          path: ${{ runner.temp }}/package/*.agxci
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  macos-seal:
+    name: macos
+    needs: macos-part
+    if: ${{ github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The seal checks HEAD's commit-derived version, so it needs history.
+          fetch-depth: 0
+          filter: tree:0
+          persist-credentials: false
+
+      - name: Require seal secrets
+        env:
+          GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
+          AGX_CI_PACKAGE_KEY: ${{ secrets.AGX_CI_PACKAGE_KEY }}
+        run: |
+          missing=""
+          [ -n "$GITCRYPT_KEY_B64" ] || missing="$missing GITCRYPT_KEY_B64"
+          [ -n "$AGX_CI_PACKAGE_KEY" ] || missing="$missing AGX_CI_PACKAGE_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::missing repository secrets:$missing"
+            exit 1
+          fi
+
+      - name: Install git-crypt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-crypt pkg-config libssl-dev
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+
+      - name: Unlock git-crypt
+        env:
+          GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
+        run: bash .github/scripts/git-crypt-unlock.sh
+
+      - uses: Swatinem/rust-cache@v2
+        continue-on-error: true
+        with:
+          # agx only. Restoring package-macos would pull the game target this
+          # job does not compile.
+          workspaces: tools/agx -> target
+          prefix-key: master-packages-v2
+          shared-key: package-macos-assemble
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Download the macos clients part
+        uses: actions/download-artifact@v8
+        with:
+          name: agx-macos-clients-${{ github.sha }}
+          path: ${{ runner.temp }}/macos-parts/clients
+
+      - name: Download the macos helper part
+        uses: actions/download-artifact@v8
+        with:
+          name: agx-macos-helper-${{ github.sha }}
+          path: ${{ runner.temp }}/macos-parts/helper
+
+      - name: Assemble the macos package
+        env:
+          AGX_CI_PACKAGE_KEY: ${{ secrets.AGX_CI_PACKAGE_KEY }}
+        run: |
+          set -euo pipefail
+          mapfile -t clients < <(find "$RUNNER_TEMP/macos-parts/clients" -type f -name '*.agxci' | sort)
+          mapfile -t helper < <(find "$RUNNER_TEMP/macos-parts/helper" -type f -name '*.agxci' | sort)
+          if [ "${#clients[@]}" -ne 1 ] || [ "${#helper[@]}" -ne 1 ]; then
+            echo "::error::expected one clients part and one helper part"
+            find "$RUNNER_TEMP/macos-parts" -type f -print
+            exit 1
+          fi
+          cargo agx ci assemble-macos --clients "${clients[0]}" --helper "${helper[0]}" --out "$RUNNER_TEMP/package" --run-url "$RUN_URL"
+          ls -l "$RUNNER_TEMP/package"
+
+      - name: Upload the sealed macos package
+        uses: actions/upload-artifact@v7
+        with:
+          name: agx-macos-${{ github.sha }}
           path: ${{ runner.temp }}/package/*.agxci
           if-no-files-found: error
           retention-days: 30
