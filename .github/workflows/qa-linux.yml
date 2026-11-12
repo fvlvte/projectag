@@ -386,9 +386,10 @@ jobs:
           done
 
   core:
-    # Five parallel legs of one job: the setup steps run in every leg and each
+    # Six parallel legs of one job: the setup steps run in every leg and each
     # check step names the one leg that runs it. needs.core.result is success
-    # only when every leg passed.
+    # only when every leg passed. The service and shard fixture suites are
+    # their own leg so they no longer sit behind the authority tests.
     name: core ${{ matrix.leg }} (client check, schedules, authority)
     needs: changes
     if: ${{ needs.changes.outputs.rust == 'true' || github.event_name != 'pull_request' }}
@@ -397,7 +398,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        leg: [checks, shipped, authority, editor-a, editor-b]
+        leg: [checks, shipped, authority, services, editor-a, editor-b]
     env:
       GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
     steps:
@@ -610,7 +611,7 @@ jobs:
         if: ${{ matrix.leg == 'authority' }}
         run: cargo test --manifest-path backend/Cargo.toml -p projectag-core --test authored_geometry world7_uses_the_map_spawn_and_legacy_arrival_stays_put -- --exact
       - name: Service and shard fixture suites
-        if: ${{ matrix.leg == 'authority' }}
+        if: ${{ matrix.leg == 'services' }}
         timeout-minutes: 45
         run: |
           cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check \
@@ -619,9 +620,11 @@ jobs:
             --id backend.api-gateway
 
   backend:
-    # Two parallel legs: the harnesses and the scenario runs. Setup steps run
-    # in both, each check step names its leg, and each leg uploads its
-    # evidence for job `evidence` to merge.
+    # Three parallel legs: the harnesses, the registered database boundaries
+    # and the scenario runs. Setup steps run in each, each check step names
+    # its leg, and each leg uploads its evidence for job `evidence` to merge.
+    # The boundaries leg writes no qa-backend files; its upload warns and is
+    # skipped, and the merge still collects the harness and scenario reports.
     name: backend ${{ matrix.leg }} (isolated PostgreSQL harnesses)
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' || github.event_name != 'pull_request' }}
@@ -630,7 +633,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        leg: [harnesses, scenarios]
+        leg: [harnesses, boundaries, scenarios]
     env:
       GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
       # Debug service binaries on a shared runner take longer than the 12 s
@@ -709,7 +712,7 @@ jobs:
           sys.exit(1 if failed else 0)
           PY
       - name: Registered service database boundaries
-        if: ${{ matrix.leg == 'harnesses' }}
+        if: ${{ matrix.leg == 'boundaries' }}
         timeout-minutes: 90
         run: |
           cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check \
@@ -759,13 +762,16 @@ jobs:
     # Product assertions and fixture failures must fail this job. Semantic
     # image review remains an explicit blocked result until QA Vision reviews
     # the captured pixels; the non-strict runner permits that review handoff.
-    # Four parallel shards of one job: each runs its own scenario step, shard 4
-    # also the Caddy check and the fixture suites, and each uploads its
-    # evidence for job `evidence` to merge. needs.client.result is success
-    # only when every shard passed. Each shard pays one cold client build and
-    # the first hosted scenario one fixture backend build, so shard 3 holds
-    # every `backend = "isolated"` scenario; rebalance from the per-scenario
-    # duration_ms in the shards' qa-report.json.
+    # Four parallel shards of one job. needs.client.result is success only
+    # when every shard passed. CI disables engine build-identity, so one
+    # `qa run` rebuilt the same release engine before every scenario. Each
+    # shard builds that engine once and passes --no-build. Shard 3 keeps every
+    # hosted-client scenario and prebuilds the opt-level-3 fixture binaries
+    # --no-build would otherwise skip. The Caddy check is a client lib test,
+    # not the release engine, so it runs on shard 3. The fixture PNG suites
+    # build target/debug/engine with --features game, so they run on shard 1.
+    # Shard 4 builds the editor engine after its standard scenarios.
+    # Each shard uploads its evidence for job `evidence` to merge.
     name: client ${{ matrix.shard }}/4 (software adapter, hosted animation + fixtures)
     needs: changes
     if: ${{ needs.changes.outputs.client == 'true' || github.event_name != 'pull_request' }}
@@ -778,8 +784,8 @@ jobs:
     outputs:
       # Keep the individual fixture result because fixtures produce PNGs,
       # not scenario reports. A panic also fails the overall client job.
-      # Only shard 4 runs them; the other shards leave this output unset.
-      fixtures_outcome: ${{ matrix.shard == 4 && steps.fixtures.outcome || '' }}
+      # Only shard 1 runs them; the other shards leave this output unset.
+      fixtures_outcome: ${{ matrix.shard == 1 && steps.fixtures.outcome || '' }}
     env:
       GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
       WGPU_BACKEND: vulkan
@@ -864,69 +870,124 @@ jobs:
       - name: QA doctor
         run: cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa doctor --json
       - name: Hosted map through real Caddy
-        if: ${{ matrix.shard == 4 }}
+        if: ${{ matrix.shard == 3 }}
+        # cargo test --lib of projectag-client. It does not run either
+        # release engine, so it stays off the shard that builds both.
         run: python3 scripts/test-hosted-map-caddy.py
       - name: Build isolated hosted fixture services
         # Keep these available when the scenario runner reuses a client via
         # --no-build; the fixture never connects to another developer server.
+        # Shard 3 is the only shard with hosted-client scenarios. --no-build
+        # skips qa-hosted-client.py's compile, which would have built these
+        # services, content-check and qa-combat-arena at dev opt-level 3.
+        # The other shards have no hosted scenario and keep the short build.
+        env:
+          QA_LINUX_CLIENT_SHARD: ${{ matrix.shard }}
         run: |
+          set -euo pipefail
           command -v initdb pg_ctl createdb psql python3
+          if [ "$QA_LINUX_CLIENT_SHARD" = 3 ]; then
+            export CARGO_PROFILE_DEV_OPT_LEVEL=3
+          fi
           cargo build --locked --manifest-path backend/Cargo.toml \
             -p auth-service --bin auth-service \
             -p api-gateway --bin api-gateway \
             -p projectag-service --bin projectag-service \
             -p projectag-request-signing --bin sign-fixture-request
+          if [ "${CARGO_PROFILE_DEV_OPT_LEVEL:-}" = 3 ]; then
+            cargo build --locked --manifest-path backend/Cargo.toml \
+              -p projectag-core --bin content-check --features authority
+            cargo build --locked --manifest-path backend/Cargo.toml \
+              -p projectag-core --features authority --example qa-combat-arena
+          fi
+      - name: Build the shared QA engine
+        # Same command and env as prepare_engine for a non-editor scenario,
+        # with the public-Actions feature policy already applied.
+        env:
+          PROJECTAG_DEFAULT_API: "off"
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+          BEVY_ASSET_ROOT: ${{ github.workspace }}
+          CARGO_MANIFEST_DIR: ${{ github.workspace }}
+        run: |
+          cargo build --manifest-path Cargo.toml --release --features game,local-sim,raytracing,qa-harness --bin engine
       - name: Client harness scenarios (shard 1)
-        # Shard 1 of the maintained selection; the four shard steps together
-        # run every scenario once.
+        # One of the maintained shards; together the shard steps run every
+        # scenario once. Durations are the runtimes left after the shared build.
         if: ${{ matrix.shard == 1 }}
         run: |
           set -euo pipefail
           # qa-hosted-client.py refuses to start without TMPDIR; runners leave it unset.
           export TMPDIR="$RUNNER_TEMP"
-          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json \
+          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json --no-build \
             --output "$RUNNER_TEMP/qa-client" \
-            harness.selftest.click-roundtrip windows.bag.open-close windows.creator-female-armor windows.patchnotes-desktop movement.touch.phone-camera-actions movement.touch.phone-fit movement.touch.browser-phone movement.touch.tablet-hud movement.touch.desktop-unchanged \
+            movement.touch.dock-controls windows.text-fit-sweep chat.input.focus-type windows.bag.open-close movement.touch.desktop-unchanged \
             | tee "$RUNNER_TEMP/qa-client-run.json"
       - name: Client harness scenarios (shard 2)
-        # Shard 2 of the maintained selection; the four shard steps together
-        # run every scenario once.
+        # One of the maintained shards; together the shard steps run every
+        # scenario once. Durations are the runtimes left after the shared build.
         if: ${{ matrix.shard == 2 }}
         run: |
           set -euo pipefail
           # qa-hosted-client.py refuses to start without TMPDIR; runners leave it unset.
           export TMPDIR="$RUNNER_TEMP"
-          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json \
+          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json --no-build \
             --output "$RUNNER_TEMP/qa-client" \
-            windows.spellbook-icon chat.input.focus-type windows.creator-female-appearance recovery.update-handoff-desktop recovery.maintenance-notice-desktop movement.creator-female-walk movement.touch.dock-controls \
+            npc-quest.dialogue-text-wrap windows.spellbook-icon movement.creator-female-walk recovery.maintenance-notice-desktop movement.touch.phone-fit movement.touch.phone-camera-actions \
             | tee "$RUNNER_TEMP/qa-client-run.json"
       - name: Client harness scenarios (shard 3)
-        # Shard 3 of the maintained selection; the four shard steps together
-        # run every scenario once.
+        # Every hosted-client scenario stays on this shard so one opt-level-3
+        # fixture build serves all four. The other three are short client runs
+        # that fill the time the hosted compile used to occupy.
         if: ${{ matrix.shard == 3 }}
         run: |
           set -euo pipefail
           # qa-hosted-client.py refuses to start without TMPDIR; runners leave it unset.
           export TMPDIR="$RUNNER_TEMP"
-          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json \
+          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json --no-build \
             --output "$RUNNER_TEMP/qa-client" \
-            movement.hosted-animation-manifest identity.second-factor-login combat.target-frame-desktop combat.target-frame-compact npc-quest.dialogue-text-wrap \
+            movement.hosted-animation-manifest identity.second-factor-login combat.target-frame-desktop combat.target-frame-compact harness.selftest.click-roundtrip windows.patchnotes-desktop recovery.update-handoff-desktop \
             | tee "$RUNNER_TEMP/qa-client-run.json"
       - name: Client harness scenarios (shard 4)
-        # Shard 4 of the maintained selection; the four shard steps together
-        # run every scenario once.
+        # Standard-feature scenarios only. The editor scenario is the next
+        # step, after the editor engine replaces target/release/engine.
         if: ${{ matrix.shard == 4 }}
         run: |
           set -euo pipefail
           # qa-hosted-client.py refuses to start without TMPDIR; runners leave it unset.
           export TMPDIR="$RUNNER_TEMP"
-          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json \
+          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json --no-build \
             --output "$RUNNER_TEMP/qa-client" \
-            windows.text-fit-sweep world-content.editor-return \
+            windows.creator-female-appearance movement.touch.browser-phone windows.creator-female-armor movement.touch.tablet-hud \
             | tee "$RUNNER_TEMP/qa-client-run.json"
+      - name: Build the editor QA engine
+        # world-content.editor-return needs projectag-editor. That binary
+        # overwrites target/release/engine, so it is built after the standard
+        # scenarios on this shard and is not the binary they just ran.
+        if: ${{ matrix.shard == 4 }}
+        env:
+          PROJECTAG_DEFAULT_API: "off"
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+          BEVY_ASSET_ROOT: ${{ github.workspace }}
+          CARGO_MANIFEST_DIR: ${{ github.workspace }}
+        run: |
+          cargo build --manifest-path Cargo.toml --release --features game,local-sim,raytracing,qa-harness,projectag-editor --bin engine
+      - name: Client harness scenarios (shard 4 editor)
+        if: ${{ matrix.shard == 4 }}
+        run: |
+          set -euo pipefail
+          # qa-hosted-client.py refuses to start without TMPDIR; runners leave it unset.
+          export TMPDIR="$RUNNER_TEMP"
+          # Separate output: the runner refuses a non-empty --output directory,
+          # and this invocation must not replace the standard scenarios' report.
+          cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json --no-build \
+            --output "$RUNNER_TEMP/qa-client-editor" \
+            world-content.editor-return \
+            | tee "$RUNNER_TEMP/qa-client-editor-run.json"
       - name: Fixture PNG suites
         id: fixtures
-        if: ${{ always() && matrix.shard == 4 }}
+        if: ${{ always() && matrix.shard == 1 }}
+        # qa fixtures builds target/debug/engine --features game. That binary
+        # is not the release engine, so the shortest shard runs the suites.
         run: xvfb-run -a cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa fixtures --output "$RUNNER_TEMP/qa-fixtures"
       - name: Stage public client evidence
         if: ${{ always() }}
@@ -940,8 +1001,20 @@ jobs:
               ! -ipath '*/data/*' ! -iname 'fixture.json' -print0 \
               | cpio --null --pass-through --make-directories --quiet "$stage")
           fi
+          if [ -d "$RUNNER_TEMP/qa-client-editor" ]; then
+            # A second qa run cannot reuse qa-client: a non-empty output
+            # directory is refused. Stage the editor report beside the others.
+            mkdir -p "$stage/editor"
+            (cd "$RUNNER_TEMP/qa-client-editor" && find . -type f -links 1 \
+              ! -ipath '*/data/*' ! -iname 'fixture.json' -print0 \
+              | cpio --null --pass-through --make-directories --quiet "$stage/editor")
+          fi
           if [ -f "$RUNNER_TEMP/qa-client-run.json" ]; then
             cp "$RUNNER_TEMP/qa-client-run.json" "$stage/qa-client-run.json"
+          fi
+          if [ -f "$RUNNER_TEMP/qa-client-editor-run.json" ]; then
+            mkdir -p "$stage/editor"
+            cp "$RUNNER_TEMP/qa-client-editor-run.json" "$stage/editor/qa-client-run.json"
           fi
       - name: Upload client evidence
         if: ${{ always() }}
@@ -953,7 +1026,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
       - name: Upload fixture renders
-        if: ${{ always() && matrix.shard == 4 }}
+        if: ${{ always() && matrix.shard == 1 }}
         uses: actions/upload-artifact@v7
         with:
           name: projectag-qa-fixtures
