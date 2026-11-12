@@ -91,11 +91,10 @@ jobs:
         continue-on-error: true
         uses: Swatinem/rust-cache@v2
         with:
-          # qa pack writes target/qa-pack, including vendored path crates.
-          # A workspace target of "." would prune those before save, so the
-          # directory is cached whole. tools/agx is only the host packer.
+          # Host packer only. target/qa-pack has its own content key below.
+          # This key does not change with vendor bytes, so a restored pack
+          # here plus pinned mtimes would ship a stale engine.
           workspaces: "tools/agx -> target"
-          cache-directories: target/qa-pack
           cache-targets: true
           cache-workspace-crates: true
           prefix-key: qa-windows-harness
@@ -117,11 +116,55 @@ jobs:
             cargo install cargo-xwin --locked
           fi
 
+      - name: Fingerprint Windows QA target inputs
+        id: qa-target-key
+        run: python3 .github/scripts/qa-windows-target-key.py >> "$GITHUB_OUTPUT"
+
+      - name: Restore Windows QA compile cache
+        id: qa-pack-target
+        uses: actions/cache/restore@v6
+        with:
+          path: target/qa-pack
+          # Exact key only. A prefix restore plus pinned vendor mtimes would
+          # keep a pack whose vendored bytes had changed.
+          key: qa-windows-qa-pack-v2-${{ runner.os }}-${{ steps.qa-target-key.outputs.key }}
+
+      - name: Restore cargo-xwin CRT
+        id: xwin-crt
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/cargo-xwin
+          key: cargo-xwin-crt-v1-${{ runner.os }}
+
+      - name: Pin vendored path crate mtimes
+        # Cargo treats a path source newer than its dep-info as dirty. A fresh
+        # checkout is newer than any restored output. The cache key covers
+        # these bytes, so this fixed mtime cannot hide a content change.
+        # crates/ keeps checkout mtimes and rebuilds. Runs on a hit and a miss.
+        run: find vendor -exec touch -h -d @946684800 {} +
+
       - name: Build private Windows QA pack
         run: |
           cargo run --release --manifest-path tools/agx/Cargo.toml -- \
             qa pack "$RUNNER_TEMP/projectag-qa-windows" \
             --target x86_64-pc-windows-msvc
+
+      - name: Save cargo-xwin CRT
+        # Not part of the xwin-msvc key. Only master writes, and an existing
+        # key is not uploaded again.
+        if: ${{ github.ref == 'refs/heads/master' && steps.xwin-crt.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/cargo-xwin
+          key: cargo-xwin-crt-v1-${{ runner.os }}
+
+      - name: Save Windows QA compile cache
+        # A new content key is the only save. Branch runs restore and do not write.
+        if: ${{ github.ref == 'refs/heads/master' && steps.qa-pack-target.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: target/qa-pack
+          key: qa-windows-qa-pack-v2-${{ runner.os }}-${{ steps.qa-target-key.outputs.key }}
 
       - name: Save xwin SDK and cargo-xwin
         # Only master writes caches; other branches restore master's.
