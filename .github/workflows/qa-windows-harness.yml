@@ -91,8 +91,13 @@ jobs:
         continue-on-error: true
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: ". -> target"
+          # qa pack writes target/qa-pack, including vendored path crates.
+          # A workspace target of "." would prune those before save, so the
+          # directory is cached whole. tools/agx is only the host packer.
+          workspaces: "tools/agx -> target"
+          cache-directories: target/qa-pack
           cache-targets: true
+          cache-workspace-crates: true
           prefix-key: qa-windows-harness
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/master' }}
@@ -222,18 +227,6 @@ jobs:
             Tee-Object -FilePath (Join-Path $results "updater-lib-tests.log")
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: DX12 pinned runtime and FXC world-entry regressions
-        shell: pwsh
-        env:
-          WGPU_BACKEND: dx12
-        run: |
-          $ErrorActionPreference = "Stop"
-          Remove-Item Env:WGPU_DX12_COMPILER -ErrorAction SilentlyContinue
-          $pack = Join-Path $env:RUNNER_TEMP "qa-expanded\projectag-qa-windows"
-          $results = Join-Path $env:RUNNER_TEMP "qa-windows-results\compiler"
-          python (Join-Path $pack "scripts\test-dx12-compiler.py") --pack $pack --output $results
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
       - name: Run Windows client harness
         id: qa
         shell: pwsh
@@ -250,7 +243,7 @@ jobs:
           [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point([int]($screen.Width / 2), [int]($screen.Height / 2))
           Set-Location $pack
           & (Join-Path $pack "agx.exe") qa run --pack . --output $results --driver harness --ready-timeout 240 --require-execution --json `
-            harness.selftest.click-roundtrip windows.bag.open-close windows.bag-open-compact windows.spellbook-icon windows.minimize-restore chat.input.focus-type windows.creator-female-desktop windows.patchnotes-desktop recovery.update-handoff-desktop recovery.maintenance-notice-desktop harness.dx12-world-entry `
+            windows.bag.open-close windows.bag-open-compact windows.spellbook-icon windows.minimize-restore recovery.update-handoff-desktop `
             | Tee-Object -FilePath (Join-Path $evidence "qa-run.json")
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -258,10 +251,143 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
-          name: projectag-qa-windows-evidence
+          name: projectag-qa-windows-part-harness
           path: |
             ${{ runner.temp }}/qa-windows-results/**
           if-no-files-found: warn
+          retention-days: 1
+
+  # The other half of the software scenario list. A second windows-latest
+  # runner: both shards drive a real window, so they cannot share one.
+  # Durations from master run 43130029522 (seconds): selftest 126, chat 264,
+  # creator 208, patchnotes 118, maintenance 273, world-entry 111.
+  run-qa-b:
+    needs: build-qa-pack
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - name: Download private QA pack
+        uses: actions/download-artifact@v8
+        with:
+          name: projectag-qa-windows-pack
+          path: ${{ runner.temp }}/qa-download
+
+      - name: Expand private QA pack
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $zip = Join-Path $env:RUNNER_TEMP "qa-download\projectag-qa-windows.zip"
+          $expanded = Join-Path $env:RUNNER_TEMP "qa-expanded"
+          Expand-Archive -LiteralPath $zip -DestinationPath $expanded -Force
+          if (!(Test-Path -LiteralPath (Join-Path $expanded "projectag-qa-windows\pack.json"))) {
+            throw "invalid QA pack"
+          }
+
+      - name: Install DirectX Shader Compiler
+        shell: pwsh
+        run: |
+          $pack = Join-Path $env:RUNNER_TEMP "qa-expanded\projectag-qa-windows"
+          # The pack helper verifies the pinned archive and each DLL before staging.
+          python (Join-Path $pack "scripts\stage-dxc-runtime.py") $pack
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run Windows client harness
+        id: qa
+        shell: pwsh
+        env:
+          WGPU_BACKEND: dx12
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pack = Join-Path $env:RUNNER_TEMP "qa-expanded\projectag-qa-windows"
+          $evidence = Join-Path $env:RUNNER_TEMP "qa-windows-results"
+          $results = Join-Path $evidence "client-b"
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+          Add-Type -AssemblyName System.Windows.Forms
+          $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
+          [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point([int]($screen.Width / 2), [int]($screen.Height / 2))
+          Set-Location $pack
+          & (Join-Path $pack "agx.exe") qa run --pack . --output $results --driver harness --ready-timeout 240 --require-execution --json `
+            harness.selftest.click-roundtrip chat.input.focus-type windows.creator-female-desktop windows.patchnotes-desktop recovery.maintenance-notice-desktop harness.dx12-world-entry `
+            | Tee-Object -FilePath (Join-Path $evidence "qa-run-b.json")
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload QA evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: projectag-qa-windows-part-harness-b
+          path: |
+            ${{ runner.temp }}/qa-windows-results/**
+          if-no-files-found: warn
+          retention-days: 1
+
+  # Three fresh world-entry processes (pinned DXC, missing DLLs, corrupted
+  # DLL). They rewrite the pack's DXC files, so this job has its own expanded
+  # pack. Run 43130029522 spent 1059s here, after the harness had already waited.
+  run-dx12:
+    needs: build-qa-pack
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - name: Download private QA pack
+        uses: actions/download-artifact@v8
+        with:
+          name: projectag-qa-windows-pack
+          path: ${{ runner.temp }}/qa-download
+
+      - name: Expand private QA pack
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $zip = Join-Path $env:RUNNER_TEMP "qa-download\projectag-qa-windows.zip"
+          $expanded = Join-Path $env:RUNNER_TEMP "qa-expanded"
+          Expand-Archive -LiteralPath $zip -DestinationPath $expanded -Force
+          if (!(Test-Path -LiteralPath (Join-Path $expanded "projectag-qa-windows\pack.json"))) {
+            throw "invalid QA pack"
+          }
+
+      - name: Install DirectX Shader Compiler
+        shell: pwsh
+        run: |
+          $pack = Join-Path $env:RUNNER_TEMP "qa-expanded\projectag-qa-windows"
+          # The pack helper verifies the pinned archive and each DLL before staging.
+          python (Join-Path $pack "scripts\stage-dxc-runtime.py") $pack
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: DX12 pinned runtime and FXC world-entry regressions
+        shell: pwsh
+        env:
+          WGPU_BACKEND: dx12
+        run: |
+          $ErrorActionPreference = "Stop"
+          Remove-Item Env:WGPU_DX12_COMPILER -ErrorAction SilentlyContinue
+          $pack = Join-Path $env:RUNNER_TEMP "qa-expanded\projectag-qa-windows"
+          $results = Join-Path $env:RUNNER_TEMP "qa-windows-results\compiler"
+          python (Join-Path $pack "scripts\test-dx12-compiler.py") --pack $pack --output $results
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload QA evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: projectag-qa-windows-part-dx12
+          path: |
+            ${{ runner.temp }}/qa-windows-results/**
+          if-no-files-found: warn
+          retention-days: 1
+
+  merge-evidence:
+    needs: [run-qa, run-qa-b, run-dx12]
+    if: ${{ always() && !cancelled() && needs.run-qa.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Merge Windows QA evidence
+        uses: actions/upload-artifact/merge@v7
+        with:
+          name: projectag-qa-windows-evidence
+          pattern: projectag-qa-windows-part-*
+          separate-directories: false
           retention-days: 14
 
   run-qa-gpu:
@@ -369,7 +495,7 @@ jobs:
           retention-days: 14
 
   report-paperclip:
-    needs: [build-qa-pack, run-qa, run-qa-gpu]
+    needs: [build-qa-pack, run-qa, run-qa-b, run-dx12, merge-evidence, run-qa-gpu]
     # Runs even when the pack build failed (skipped run-qa): the gate comment
     # must name a failed build, not stay silent.
     if: ${{ always() && needs.build-qa-pack.result != 'skipped' && github.event_name != 'push' }}
@@ -383,8 +509,8 @@ jobs:
       PAPERCLIP_QA_WORKFLOW: qa-windows-harness
       PAPERCLIP_QA_ARTIFACT: projectag-qa-windows-evidence
       PAPERCLIP_QA_REQUIRED_ARTIFACTS: projectag-qa-windows-evidence ${{ needs.run-qa-gpu.result != 'skipped' && 'projectag-qa-windows-gpu-evidence' || '' }}
-      PAPERCLIP_QA_RESULT: ${{ needs.run-qa.result == 'success' && (needs.run-qa-gpu.result == 'success' || needs.run-qa-gpu.result == 'skipped') && 'success' || 'failure' }}
-      PAPERCLIP_QA_JOBS: build-qa-pack=${{ needs.build-qa-pack.result }} run-qa=${{ needs.run-qa.result }} run-qa-gpu=${{ needs.run-qa-gpu.result }}
+      PAPERCLIP_QA_RESULT: ${{ needs.run-qa.result == 'success' && needs.run-qa-b.result == 'success' && needs.run-dx12.result == 'success' && needs.merge-evidence.result == 'success' && (needs.run-qa-gpu.result == 'success' || needs.run-qa-gpu.result == 'skipped') && 'success' || 'failure' }}
+      PAPERCLIP_QA_JOBS: build-qa-pack=${{ needs.build-qa-pack.result }} run-qa=${{ needs.run-qa.result }} run-qa-b=${{ needs.run-qa-b.result }} run-dx12=${{ needs.run-dx12.result }} merge-evidence=${{ needs.merge-evidence.result }} run-qa-gpu=${{ needs.run-qa-gpu.result }}
       PAPERCLIP_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       PAPERCLIP_PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
       GH_TOKEN: ${{ github.token }}
