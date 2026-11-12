@@ -1214,8 +1214,9 @@ jobs:
       PAPERCLIP_QA_REQUIRED_ARTIFACTS: ${{ format('{0} {1}', needs.client.result != 'skipped' && 'projectag-qa-linux-evidence' || '', needs.backend.result != 'skipped' && 'projectag-qa-backend-evidence' || '') }}
       PAPERCLIP_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       PAPERCLIP_PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
-      # Nightly runs have no issue branch; the summaries go to the standing
-      # issue `QA nightly` instead.
+      # Nightly runs have no issue branch. When PAPERCLIP_NIGHTLY_ENABLED is
+      # true the summaries go to the standing issue `QA nightly`. Unset
+      # disables that post while the Paperclip fleet is paused (2026-11-12).
       PAPERCLIP_NIGHTLY: ${{ github.event_name == 'schedule' && '1' || '' }}
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -1229,9 +1230,15 @@ jobs:
           pattern: projectag-qa-*-evidence
           path: qa-evidence
       - name: Post the QA gate and evidence summaries
-        if: ${{ env.PAPERCLIP_API_KEY != '' }}
+        if: ${{ env.PAPERCLIP_API_KEY != '' && (github.event_name != 'schedule' || vars.PAPERCLIP_NIGHTLY_ENABLED == 'true') }}
         shell: bash
         run: |
           set -euo pipefail
           mapfile -t reports < <(find qa-evidence -name qa-report.json 2>/dev/null | sort)
           bash .github/scripts/upload-paperclip-qa-summary.sh "${reports[@]}"
+      - name: Nightly Paperclip posting disabled
+        if: ${{ github.event_name == 'schedule' && vars.PAPERCLIP_NIGHTLY_ENABLED != 'true' }}
+        shell: bash
+        run: |
+          echo "nightly Paperclip posting disabled (PAPERCLIP_NIGHTLY_ENABLED is not true)"
+          exit 0

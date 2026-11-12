@@ -22,7 +22,15 @@
 #              this head belongs to this pull request) -> nothing is
 #              posted; the workflow that finishes last posts the gate
 #   * PAPERCLIP_NIGHTLY=1 -> the summaries go to the standing issue
-#     `QA nightly` (created when missing), never to a branch issue
+#     `QA nightly` (created when missing), never to a branch issue.
+#     qa-linux runs this script for a schedule event only when the repository
+#     variable PAPERCLIP_NIGHTLY_ENABLED is `true`. Unset disables nightly
+#     posting: the post step is skipped, and a sibling step logs
+#     `nightly Paperclip posting disabled (PAPERCLIP_NIGHTLY_ENABLED is not true)`
+#     and exits 0. When nightly posting is on, a failed or non-list company
+#     issue list exits 1 and does not POST a create. A rejected token on that
+#     list, on create, or on the nightly comment still exits 1. Push skips
+#     the job. A workflow_dispatch or pull-request comment rejection still exits 1.
 #
 # Issue lookup: resolve_issue() GET /api/issues/{ident} from the branch name
 # (`AGS-12-...`). When the branch has no `{PREFIX}-{n}` token and
@@ -37,6 +45,8 @@
 # text. No identifier and no matching PR work product still exits 0, and so does
 # a board that cannot be reached at all: this step reports the gate, it is not
 # the gate, and a board outage must not red a run whose QA jobs all passed.
+# The nightly standing-issue list is the exception: a failed or non-list
+# response exits 1 and does not create `QA nightly`.
 #
 # Environment: PAPERCLIP_API_URL, PAPERCLIP_API_KEY (required),
 # PAPERCLIP_COMPANY_ID (labels, children, PR work-product lookup, standing issue), PAPERCLIP_QA_WORKFLOW
@@ -573,14 +583,23 @@ def issue_label_ids(issue):
 
 
 def standing_issue():
-    st, issues = paperclip("GET", f"/api/companies/{COMPANY}/issues") if COMPANY else (500, None)
-    if st < 300 and isinstance(issues, list):
-        for i in issues:
-            if i.get("title") == STANDING_TITLE and i.get("status") not in ("cancelled",):
-                return i
     if not COMPANY:
         print("PAPERCLIP_COMPANY_ID is unset; cannot find or create the standing nightly issue", file=sys.stderr)
         sys.exit(1)
+    st, issues = paperclip("GET", f"/api/companies/{COMPANY}/issues")
+    # A failed or non-list response is not proof that `QA nightly` is missing.
+    # Run 43203489334 treated HTTP 401 as missing and POSTed a create, which
+    # failed the same way and turned a green master gate red.
+    if st >= 300 or not isinstance(issues, list):
+        print(
+            f"could not list company issues for the standing nightly issue HTTP {st} "
+            f"class={response_class(issues)}; not creating an issue after a failed list",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    for i in issues:
+        if isinstance(i, dict) and i.get("title") == STANDING_TITLE and i.get("status") not in ("cancelled",):
+            return i
     st, agents = paperclip("GET", f"/api/companies/{COMPANY}/agents")
     analyst = next((a.get("id") for a in (agents if isinstance(agents, list) else []) if a.get("name") == "QA Analyst"), None)
     body = {
