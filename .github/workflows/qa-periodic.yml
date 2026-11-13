@@ -41,7 +41,7 @@ jobs:
       # Pushes and releases keep the rest of the account's job slots.
       max-parallel: 3
       matrix:
-        shard: [backend, windows-settings, windows-layouts, combat-ui, hosted-combat, hosted-world, scenes-port, scenes-island, editor-journeys, editor-panels]
+        shard: [backend, windows-settings, windows-layouts, combat-ui, hosted-combat, hosted-world, hosted-studio, hosted-content, hosted-shores, scenes-port, scenes-island, editor-journeys, editor-panels]
     env:
       GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
       SHARD: ${{ matrix.shard }}
@@ -129,11 +129,11 @@ jobs:
           echo "$RUNNER_TEMP/binaryen/bin" >> "$GITHUB_PATH"
           cargo fetch --locked --manifest-path examples/harmony-games/Cargo.toml
       - name: Build hosted sweep client once
-        if: ${{ matrix.shard == 'hosted-combat' || matrix.shard == 'hosted-world' }}
+        if: ${{ matrix.shard == 'hosted-combat' || matrix.shard == 'hosted-world' || matrix.shard == 'hosted-studio' || matrix.shard == 'hosted-content' || matrix.shard == 'hosted-shores' }}
         run: |
           features=game,local-sim,raytracing,qa-harness
-          # Shared drafts in hosted-world also exercises the editor graph.
-          if [[ "$SHARD" == hosted-world ]]; then
+          # Editor drafts share one client. Account and combat shards do not open the editor.
+          if [[ "$SHARD" == hosted-studio || "$SHARD" == hosted-content || "$SHARD" == hosted-shores ]]; then
             features+=,projectag-editor
           fi
           PROJECTAG_DEFAULT_API=off CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" \
@@ -147,7 +147,7 @@ jobs:
           build_args=()
           # Each hosted shard uses one client feature set. All its fixture
           # binaries were built above; do not repeat Cargo before every case.
-          if [[ "$SHARD" == hosted-combat || "$SHARD" == hosted-world ]]; then
+          if [[ "$SHARD" == hosted-combat || "$SHARD" == hosted-world || "$SHARD" == hosted-studio || "$SHARD" == hosted-content || "$SHARD" == hosted-shores ]]; then
             build_args+=(--no-build)
           fi
           cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json \
@@ -253,9 +253,10 @@ jobs:
       - name: Build hosted sweep client once
         if: ${{ matrix.shard == 'mac-hosted' }}
         run: |
+          # studio-import-db clicks qa:hud.editor. Without this feature the chip is not in the binary.
           PROJECTAG_DEFAULT_API=off CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" \
             BEVY_ASSET_ROOT="$GITHUB_WORKSPACE" CARGO_MANIFEST_DIR="$GITHUB_WORKSPACE" \
-            cargo build --locked --release --features game,local-sim,raytracing,qa-harness --bin engine
+            cargo build --locked --release --features game,local-sim,raytracing,qa-harness,projectag-editor --bin engine
       - name: Shard scenarios
         run: |
           set -euo pipefail
@@ -418,7 +419,7 @@ jobs:
           path: ${{ runner.temp }}/reports
       - name: Summarize
         env:
-          QA_PERIODIC_SHARDS: backend=${{ needs.linux.result }} windows-settings=${{ needs.linux.result }} windows-layouts=${{ needs.linux.result }} combat-ui=${{ needs.linux.result }} hosted-combat=${{ needs.linux.result }} hosted-world=${{ needs.linux.result }} scenes-port=${{ needs.linux.result }} scenes-island=${{ needs.linux.result }} editor-journeys=${{ needs.linux.result }} editor-panels=${{ needs.linux.result }} mac=${{ needs.macos.result }} mac-hosted=${{ needs.macos.result }} rtx=${{ needs.rtx.result }}
+          QA_PERIODIC_SHARDS: backend=${{ needs.linux.result }} windows-settings=${{ needs.linux.result }} windows-layouts=${{ needs.linux.result }} combat-ui=${{ needs.linux.result }} hosted-combat=${{ needs.linux.result }} hosted-world=${{ needs.linux.result }} hosted-studio=${{ needs.linux.result }} hosted-content=${{ needs.linux.result }} hosted-shores=${{ needs.linux.result }} scenes-port=${{ needs.linux.result }} scenes-island=${{ needs.linux.result }} editor-journeys=${{ needs.linux.result }} editor-panels=${{ needs.linux.result }} mac=${{ needs.macos.result }} mac-hosted=${{ needs.macos.result }} rtx=${{ needs.rtx.result }}
         run: python3 .github/scripts/qa-periodic-report.py "$RUNNER_TEMP/reports" "$RUNNER_TEMP/summary" --issue
       - name: Upload summary
         if: ${{ always() }}
