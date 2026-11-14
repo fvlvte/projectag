@@ -139,6 +139,12 @@ jobs:
           PROJECTAG_DEFAULT_API=off CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" \
             BEVY_ASSET_ROOT="$GITHUB_WORKSPACE" CARGO_MANIFEST_DIR="$GITHUB_WORKSPACE" \
             cargo build --locked --release --features "$features" --bin engine
+          # The Shores editor draft stages an isolated play-test, which needs the
+          # debug helper; the shard runs with --no-build, so agx will not build it.
+          if [[ "$SHARD" == hosted-shores ]]; then
+            env -u PROJECTAG_DEFAULT_API -u PROJECTAG_HELPER_API_ORIGIN CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" \
+              cargo build --locked --manifest-path Cargo.toml --features gm-playtest-helper --bin playtest-helper
+          fi
       - name: Shard scenarios
         run: |
           set -euo pipefail
