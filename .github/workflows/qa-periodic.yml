@@ -141,8 +141,11 @@ jobs:
             cargo build --locked --release --features "$features" --bin engine
           # The Shores editor draft stages an isolated play-test, which needs the
           # debug helper; the shard runs with --no-build, so agx will not build it.
+          # Without debug info and symbols the Linux helper is 295 MB; with them
+          # it is 799 MB, over the 512 MiB play-test package seal.
           if [[ "$SHARD" == hosted-shores ]]; then
             env -u PROJECTAG_DEFAULT_API -u PROJECTAG_HELPER_API_ORIGIN CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" \
+              CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_DEV_STRIP=symbols \
               cargo build --locked --manifest-path Cargo.toml --features gm-playtest-helper --bin playtest-helper
           fi
       - name: Shard scenarios
