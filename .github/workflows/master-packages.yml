@@ -311,34 +311,6 @@ jobs:
         if: ${{ matrix.kind == 'web' }}
         run: |
           set -euo pipefail
-          # dist-web is fat LTO with one codegen unit: one rustc reaches about
-          # 14.5 GiB on this 16 GiB runner and the runner was shut down or lost
-          # five times in two days. The build below runs under MemoryHigh=12G,
-          # which needs more swap than the image's 3 GiB (3.69 GiB measured).
-          swapfile=/swap-web
-          sudo fallocate -l 8G "$swapfile"
-          sudo chmod 600 "$swapfile"
-          sudo mkswap "$swapfile"
-          if ! sudo swapon "$swapfile"; then
-            sudo swapoff "$swapfile" || true
-            sudo dd if=/dev/zero of="$swapfile" bs=1M count=8192 status=none
-            sudo chmod 600 "$swapfile"
-            sudo mkswap "$swapfile"
-            sudo swapon "$swapfile"
-          fi
-          for d in /proc/[0-9]*; do
-            comm=$(cat "$d/comm" 2>/dev/null || true)
-            case "$comm" in
-              Runner.Listener|Runner.Worker)
-                echo -1000 | sudo tee "$d/oom_score_adj" >/dev/null
-                ;;
-            esac
-          done
-
-      - name: Swap and agent protection for the web package
-        if: ${{ matrix.kind == 'web' }}
-        run: |
-          set -euo pipefail
           # dist-web is fat LTO with one codegen unit: one rustc reaches
           # 14.5 GiB on this 16 GiB runner and the runner agent was shut
           # down or lost five times in two days without a compiler error.
@@ -378,28 +350,6 @@ jobs:
           # <commit> ios` signs and exports the archive on the operator's Mac.
           if [ "${{ matrix.kind }}" = ios ]; then xcodebuild -version; fi
           if [ "${{ matrix.kind }}" = web ]; then
-            # A transient service holds the compiler at MemoryHigh=12G so it is
-            # reclaimed into swap before the runner agent starves. The service
-            # does not inherit this environment, so it is handed over in a
-            # 0600 file that the service deletes after reading. Never print
-            # that file: it holds the signing and package keys.
-            umask 077
-            envfile="$RUNNER_TEMP/web-build.env"
-            trap 'rm -f "$envfile"' EXIT
-            python3 -c 'import os, re, shlex, sys
-          with open(sys.argv[1], "w") as out:
-              for k, v in os.environ.items():
-                  if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k) and "\0" not in v:
-                      out.write(f"export {k}={shlex.quote(v)}\n")
-          os.chmod(sys.argv[1], 0o600)' "$envfile"
-            sudo systemd-run --pipe --wait --collect \
-              -p MemoryHigh=12G -p MemorySwapMax=infinity \
-              --uid="$(id -u)" --gid="$(id -g)" \
-              --working-directory="$GITHUB_WORKSPACE" -- \
-              /bin/bash -c 'set -euo pipefail; source "$1"; rm -f "$1"; exec bash .github/scripts/with-native-signing-key.sh cargo agx ci build "$2" --out "$RUNNER_TEMP/package" --run-url "$RUN_URL"' \
-              bash "$envfile" "${{ matrix.kind }}"
-          else
-            if [ "${{ matrix.kind }}" = web ]; then
             # A transient service does not inherit this environment, so it
             # is handed over in a 0600 file that the service deletes before
             # the build starts. Never print that file: it holds the signing
@@ -421,7 +371,6 @@ jobs:
               bash "$envfile"
           else
             bash .github/scripts/with-native-signing-key.sh cargo agx ci build "${{ matrix.kind }}" --out "$RUNNER_TEMP/package" --run-url "$RUN_URL"
-          fi
           fi
           ls -l "$RUNNER_TEMP/package"
 
