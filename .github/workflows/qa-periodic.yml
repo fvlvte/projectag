@@ -38,8 +38,8 @@ jobs:
     timeout-minutes: 240
     strategy:
       fail-fast: false
-      # Pushes and releases keep the rest of the account's job slots.
-      max-parallel: 3
+      # Every shard at once: a sweep costs its slowest shard, not the sum.
+      max-parallel: 13
       matrix:
         shard: [backend, windows-settings, windows-layouts, combat-ui, hosted-combat, hosted-world, hosted-studio, hosted-content, hosted-shores, scenes-port, scenes-island, editor-journeys, editor-panels]
     env:
@@ -208,7 +208,7 @@ jobs:
     timeout-minutes: 240
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: 2
       matrix:
         shard: [mac, mac-hosted]
     env:
