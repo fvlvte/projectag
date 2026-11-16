@@ -7,7 +7,12 @@
 # file's matrices and the scenario catalogue in step. Policy:
 # docs/development/testing.md. `.github/**` is git-crypt-exempt, so GitHub can
 # read this file; the scenario lists stay in the encrypted manifest.
+# workflow_dispatch input `shards` runs only those shards. Empty, and the
+# schedule, run every shard. A partial run is not a sweep: it does not open
+# or close the sweep issue, and it is cancelled so it is not a green or red
+# sweep (`cargo agx ci status` ignores a cancelled run).
 name: qa-periodic
+run-name: ${{ github.event_name == 'workflow_dispatch' && inputs.shards != '' && format('partial {0}', inputs.shards) || 'qa-periodic' }}
 
 on:
   schedule:
@@ -15,10 +20,19 @@ on:
     # note in docs/development/testing.md before changing it.
     - cron: "23 9 * * *"
   workflow_dispatch:
+    inputs:
+      shards:
+        description: "Shard names separated by spaces or commas. Empty runs the full sweep."
+        required: false
+        default: ""
+        type: string
 
 concurrency:
   # One sweep at a time. A late schedule waits instead of replacing evidence.
-  group: qa-periodic
+  # A dispatch that names shards takes its own group, the list as typed, so
+  # it neither waits on nor blocks the sweep. cancel-in-progress stays false:
+  # a second run of the same group waits.
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.shards != '' && format('qa-periodic-partial-{0}', inputs.shards) || 'qa-periodic' }}
   cancel-in-progress: false
 
 permissions:
@@ -32,16 +46,144 @@ env:
   CARGO_BUILD_WARNINGS: deny
 
 jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      linux: ${{ steps.select.outputs.linux }}
+      macos: ${{ steps.select.outputs.macos }}
+      rtx: ${{ steps.select.outputs.rtx }}
+      partial: ${{ steps.select.outputs.partial }}
+      selected: ${{ steps.select.outputs.selected }}
+    steps:
+      - name: Select shards
+        id: select
+        env:
+          # Empty on a schedule. A dispatch with no names is empty too.
+          REQUEST: ${{ github.event_name == 'workflow_dispatch' && inputs.shards || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # static.qa-homes reads these three assignments. They are the full lists.
+          linux_shards=(backend windows-settings windows-layouts combat-ui hosted-combat hosted-world hosted-studio hosted-content hosted-shores scenes-port scenes-island editor-journeys editor-panels)
+          macos_shards=(mac mac-hosted)
+          rtx_shards=(rtx)
+          json() {
+            local out="["
+            local first=1
+            local name
+            for name in "$@"; do
+              if [ "$first" -eq 1 ]; then
+                first=0
+              else
+                out+=","
+              fi
+              out+="\"${name}\""
+            done
+            printf '%s]' "$out"
+          }
+          choose() {
+            if [ "$partial" = false ]; then
+              json "$@"
+              return
+            fi
+            local picked=()
+            local name want
+            for name in "$@"; do
+              for want in "${wanted[@]}"; do
+                if [ "$name" = "$want" ]; then
+                  picked+=("$name")
+                  break
+                fi
+              done
+            done
+            if [ "${#picked[@]}" -eq 0 ]; then
+              printf '[]'
+            else
+              json "${picked[@]}"
+            fi
+          }
+          wanted=()
+          request="${REQUEST//,/ }"
+          if [ -n "$request" ]; then
+            read -r -a wanted <<< "$request"
+          fi
+          if [ "${#wanted[@]}" -eq 0 ]; then
+            partial=false
+          else
+            partial=true
+          fi
+          valid=("${linux_shards[@]}" "${macos_shards[@]}" "${rtx_shards[@]}")
+          unknown=()
+          if [ "$partial" = true ]; then
+            for want in "${wanted[@]}"; do
+              known=false
+              for name in "${valid[@]}"; do
+                if [ "$want" = "$name" ]; then
+                  known=true
+                  break
+                fi
+              done
+              if [ "$known" = false ]; then
+                unknown+=("$want")
+              fi
+            done
+          fi
+          if [ "${#unknown[@]}" -gt 0 ]; then
+            echo "Unknown shard: ${unknown[*]}. Valid shards: ${valid[*]}."
+            exit 1
+          fi
+          selected=()
+          if [ "$partial" = true ]; then
+            for name in "${valid[@]}"; do
+              for want in "${wanted[@]}"; do
+                if [ "$name" = "$want" ]; then
+                  selected+=("$name")
+                  break
+                fi
+              done
+            done
+          fi
+          rtx=false
+          if [ "$partial" = false ]; then
+            rtx=true
+          else
+            for want in "${wanted[@]}"; do
+              if [ "$want" = rtx ]; then
+                rtx=true
+              fi
+            done
+          fi
+          linux_json="$(choose "${linux_shards[@]}")"
+          macos_json="$(choose "${macos_shards[@]}")"
+          selected_text=""
+          if [ "${#selected[@]}" -gt 0 ]; then
+            selected_text="${selected[*]}"
+          fi
+          echo "partial=${partial} linux=${linux_json} macos=${macos_json} rtx=${rtx} selected=${selected_text}"
+          {
+            echo "linux=${linux_json}"
+            echo "macos=${macos_json}"
+            echo "rtx=${rtx}"
+            echo "partial=${partial}"
+            echo "selected=${selected_text}"
+          } >> "$GITHUB_OUTPUT"
+
   linux:
     name: linux (${{ matrix.shard }})
+    needs: plan
+    # GitHub rejects an empty matrix. Skip when this dispatch named none of these shards.
+    if: ${{ needs.plan.result == 'success' && needs.plan.outputs.linux != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 240
     strategy:
       fail-fast: false
       # Every shard at once: a sweep costs its slowest shard, not the sum.
+      # A partial dispatch keeps this cap and only narrows the matrix.
       max-parallel: 13
       matrix:
-        shard: [backend, windows-settings, windows-layouts, combat-ui, hosted-combat, hosted-world, hosted-studio, hosted-content, hosted-shores, scenes-port, scenes-island, editor-journeys, editor-panels]
+        shard: ${{ fromJSON(needs.plan.outputs.linux) }}
     env:
       GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
       SHARD: ${{ matrix.shard }}
@@ -201,6 +343,9 @@ jobs:
 
   macos:
     name: macos (${{ matrix.shard }})
+    needs: plan
+    # GitHub rejects an empty matrix. Skip when this dispatch named none of these shards.
+    if: ${{ needs.plan.result == 'success' && needs.plan.outputs.macos != '[]' }}
     # A VM's Metal device: fast enough for the scenarios a software adapter
     # cannot time, and the only path for the Metal-only scenarios. It is not
     # device acceptance.
@@ -210,7 +355,7 @@ jobs:
       fail-fast: false
       max-parallel: 2
       matrix:
-        shard: [mac, mac-hosted]
+        shard: ${{ fromJSON(needs.plan.outputs.macos) }}
     env:
       GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
       SHARD: ${{ matrix.shard }}
@@ -316,9 +461,11 @@ jobs:
 
   rtx-pack:
     name: rtx pack
+    needs: plan
     # The newest private Windows QA pack a push already built, so the sweep
-    # builds none. Skipped while the owner's GPU runner is off.
-    if: ${{ vars.GPU_RUNNER_AVAILABLE == 'true' }}
+    # builds none. Skipped while the owner's GPU runner is off, and when a
+    # partial dispatch did not name rtx.
+    if: ${{ needs.plan.result == 'success' && needs.plan.outputs.rtx == 'true' && vars.GPU_RUNNER_AVAILABLE == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -336,10 +483,11 @@ jobs:
 
   rtx:
     name: rtx
-    needs: rtx-pack
+    needs: [plan, rtx-pack]
     # The owner's runner is off by default and runs in batches: only while the
-    # switch is on, one shard, one job at a time.
-    if: ${{ vars.GPU_RUNNER_AVAILABLE == 'true' }}
+    # switch is on, one shard, one job at a time. A partial dispatch runs it
+    # only when rtx was named.
+    if: ${{ needs.plan.result == 'success' && needs.plan.outputs.rtx == 'true' && vars.GPU_RUNNER_AVAILABLE == 'true' }}
     runs-on: [self-hosted, Windows, heavy-gpu]
     concurrency:
       group: qa-periodic-gpu
@@ -404,8 +552,11 @@ jobs:
 
   report:
     name: report
-    needs: [linux, macos, rtx]
-    if: ${{ always() }}
+    needs: [plan, linux, macos, rtx]
+    # always() so a failed shard still reaches the summary. A failed plan
+    # (an unknown shard name) must not: every shard would look skipped and
+    # a green summary would close the sweep issue.
+    if: ${{ always() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -429,12 +580,59 @@ jobs:
       - name: Summarize
         env:
           QA_PERIODIC_SHARDS: backend=${{ needs.linux.result }} windows-settings=${{ needs.linux.result }} windows-layouts=${{ needs.linux.result }} combat-ui=${{ needs.linux.result }} hosted-combat=${{ needs.linux.result }} hosted-world=${{ needs.linux.result }} hosted-studio=${{ needs.linux.result }} hosted-content=${{ needs.linux.result }} hosted-shores=${{ needs.linux.result }} scenes-port=${{ needs.linux.result }} scenes-island=${{ needs.linux.result }} editor-journeys=${{ needs.linux.result }} editor-panels=${{ needs.linux.result }} mac=${{ needs.macos.result }} mac-hosted=${{ needs.macos.result }} rtx=${{ needs.rtx.result }}
-        run: python3 .github/scripts/qa-periodic-report.py "$RUNNER_TEMP/reports" "$RUNNER_TEMP/summary" --issue
+          PARTIAL: ${{ needs.plan.outputs.partial }}
+          SELECTED: ${{ needs.plan.outputs.selected }}
+        run: |
+          set -euo pipefail
+          if [ "$PARTIAL" = true ]; then
+            echo "Partial run (${SELECTED}): not a sweep. The sweep issue is left unchanged."
+            filtered=()
+            for name in $SELECTED; do
+              found=
+              for entry in $QA_PERIODIC_SHARDS; do
+                case "$entry" in
+                  "$name"=*) found=$entry ;;
+                esac
+              done
+              if [ -z "$found" ]; then
+                echo "No result for shard ${name}." >&2
+                exit 1
+              fi
+              filtered+=("$found")
+            done
+            if [ "${#filtered[@]}" -eq 0 ]; then
+              echo "Partial run selected no shard." >&2
+              exit 1
+            fi
+            QA_PERIODIC_SHARDS="${filtered[*]}"
+            python3 .github/scripts/qa-periodic-report.py "$RUNNER_TEMP/reports" "$RUNNER_TEMP/summary"
+          else
+            python3 .github/scripts/qa-periodic-report.py "$RUNNER_TEMP/reports" "$RUNNER_TEMP/summary" --issue
+          fi
       - name: Upload summary
-        if: ${{ always() }}
+        # A partial run must not replace the sweep summary cargo agx ci status reads.
+        if: ${{ always() && needs.plan.outputs.partial != 'true' }}
         uses: actions/upload-artifact@v7
         with:
           name: qa-periodic-summary
           path: ${{ runner.temp }}/summary/summary.json
           if-no-files-found: warn
           retention-days: 30
+
+  seal:
+    name: seal
+    needs: [plan, report]
+    # A finished partial run would be the newest qa-periodic run on master.
+    # cargo agx ci status treats conclusion success as a green sweep and any
+    # other counted conclusion as red. A cancelled run counts as neither
+    # (periodic.rs). Shard jobs keep their own conclusions.
+    if: ${{ always() && needs.plan.outputs.partial == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Keep this partial run out of the sweep record
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run cancel "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY"
