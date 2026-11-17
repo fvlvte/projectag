@@ -610,7 +610,7 @@ jobs:
             python3 .github/scripts/qa-periodic-report.py "$RUNNER_TEMP/reports" "$RUNNER_TEMP/summary" --issue
           fi
       - name: Upload summary
-        # A partial run must not replace the sweep summary cargo agx ci status reads.
+        # A partial run must not replace the sweep summary that `agx ci status` reads.
         if: ${{ always() && needs.plan.outputs.partial != 'true' }}
         uses: actions/upload-artifact@v7
         with:
@@ -623,7 +623,7 @@ jobs:
     name: seal
     needs: [plan, report]
     # A finished partial run would be the newest qa-periodic run on master.
-    # cargo agx ci status treats conclusion success as a green sweep and any
+    # `agx ci status` treats conclusion success as a green sweep and any
     # other counted conclusion as red. A cancelled run counts as neither
     # (periodic.rs). Shard jobs keep their own conclusions.
     if: ${{ always() && needs.plan.outputs.partial == 'true' }}
