@@ -109,9 +109,10 @@ function Set-MachineVariable([string]$Name, [string]$Value) {
 }
 
 function Find-Command([string]$Name) {
-  # A WindowsApps python.exe is the Store alias stub, not an interpreter.
+  # A WindowsApps python.exe is the Store alias stub, not an interpreter. Other tools there are real:
+  # winget itself, and pwsh when winget only offers the packaged (MSIX) PowerShell for this machine.
   Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue |
-    Where-Object { $Name -eq 'winget' -or $_.Source -notlike '*\WindowsApps\*' } | Select-Object -First 1
+    Where-Object { $Name -notlike 'python*' -or $_.Source -notlike '*\WindowsApps\*' } | Select-Object -First 1
 }
 
 function Save-Download([string]$Uri, [string]$Name) {
