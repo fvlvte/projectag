@@ -78,6 +78,8 @@ jobs:
             rust:
               - 'src/**'
               - 'crates/**'
+              - 'scripts/worldforge/**'
+              - 'scripts/worldgen/data/**'
               - 'examples/moonlight-counter/**'
               - 'examples/harmony-games/**'
               - 'backend/**'
@@ -461,6 +463,10 @@ jobs:
           prefix-key: qa-linux-core
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Deterministic world generation parity and portable core
+        if: ${{ matrix.leg == 'checks' }}
+        run: |
+          cargo agx check --id worldforge.tests --id worldforge.no-std --id worldforge.wasm --id worldforge.clippy
       - name: Vendored block compiler compatibility (compile only)
         if: ${{ matrix.leg == 'checks' }}
         run: |
