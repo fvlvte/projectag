@@ -164,7 +164,8 @@ jobs:
     needs: win-src
     # claude/ci-gpu/ runs on the owner's self-hosted RTX machine; it may be offline, so a run can queue.
     runs-on: ${{ startsWith(github.ref_name, 'claude/ci-gpu/') && fromJSON('["self-hosted","Windows","heavy-gpu"]') || 'windows-latest' }}
-    timeout-minutes: ${{ startsWith(github.ref_name, 'claude/ci-gpu/') && 840 || 240 }}
+    # The owner's machine also gates master releases (run-qa-gpu): a lane run may hold it for two hours at most.
+    timeout-minutes: ${{ startsWith(github.ref_name, 'claude/ci-gpu/') && 120 || 240 }}
     defaults:
       run:
         shell: bash
@@ -203,10 +204,22 @@ jobs:
           name: win-src
           path: ${{ runner.temp }}/src
       - name: run
+        timeout-minutes: ${{ startsWith(github.ref_name, 'claude/ci-gpu/') && 100 || 230 }}
         env:
           GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
           GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/claude-ci-win.sh
+      - name: stop leftover job processes (self-hosted)
+        # A client or cargo child that outlives the script keeps the step's pipes open and the runner
+        # stuck finishing the job. Only processes started from this job's own directories are stopped.
+        if: always() && startsWith(github.ref_name, 'claude/ci-gpu/')
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
+        run: |
+          $roots = @($env:RUNNER_TEMP, $env:GITHUB_WORKSPACE) | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\') + '\' }
+          Get-CimInstance Win32_Process | Where-Object { $p = $_.ExecutablePath; $p -and ($roots | Where-Object { $p.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) }) } | ForEach-Object {
+            Write-Host "stopping leftover $($_.Name) pid $($_.ProcessId)"
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+          }
       - name: upload cache
         if: always()
         uses: actions/upload-artifact@v4
