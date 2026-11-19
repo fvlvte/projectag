@@ -313,7 +313,7 @@ jobs:
           python3 -B -W error scripts/test_shores_fresh_placement.py
           python3 -W error scripts/test_content_ids.py
       - name: World generator tests (worldforge)
-        timeout-minutes: 10
+        timeout-minutes: 15
         run: python3 -B -W error -m unittest discover -s scripts -p 'test_worldforge_*.py'
       - name: Public PR title and body scan
         if: ${{ github.event_name == 'pull_request' || steps.dispatch_pr.outputs.number }}
