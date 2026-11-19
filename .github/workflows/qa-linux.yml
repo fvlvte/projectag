@@ -78,10 +78,11 @@ jobs:
             rust:
               - 'src/**'
               - 'crates/**'
-              - 'scripts/worldforge/**'
-              - 'scripts/worldgen/data/**'
               - 'examples/moonlight-counter/**'
               - 'examples/harmony-games/**'
+              # The Rust world generator embeds the Python reference's data and goldens.
+              - 'scripts/worldforge/**'
+              - 'scripts/worldgen/data/**'
               - 'backend/**'
               - 'tools/**'
               - 'vendor/**'
