@@ -20,6 +20,9 @@ bash .github/scripts/git-crypt-unlock.sh
 # real credentials never take part in a run: delete them, then write dummy placeholders for build scripts
 find backend/deploy -type f \( -name '*.env' -o -name '*.token' -o -name '*.password' -o -name '*.key' -o -path '*/certs/*' \) -delete 2>/dev/null
 rm -f admin/src/config.ts backend/scripts/qa-hosted-client.py backend/scripts/test-projectag-email-setup.py
+# The QA catalog names qa-hosted-client.py as an owner source; it is deleted above, so validation must say it skipped
+# it rather than fail or pretend (2026-11-19). Scenarios that need it are hosted ones and still cannot run here.
+export PROJECTAG_QA_UNVERIFIED_SOURCE_PREFIXES="${PROJECTAG_QA_UNVERIFIED_SOURCE_PREFIXES:-backend/scripts/qa-hosted-client.py,backend/scripts/test-projectag-email-setup.py}"
 printf '%032d\n' 0 > backend/deploy/download.token; printf 'placeholder-0000\n' > backend/deploy/download.password; printf '%032d\n' 0 > backend/deploy/inbox-tool.token
 # the release identity carries a real release seed: keep only its public version fields, swap the key for a fixed dummy (all-zero is rejected by ReleaseIdentity::parse)
 python3 -c 'import json; p="backend/deploy/release-identity.json"; d=json.load(open(p)); d["signing_key"]="01"*32; open(p,"w").write(json.dumps(d))'
