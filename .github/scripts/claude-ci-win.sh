@@ -29,6 +29,8 @@ if [ -n "$cache_run" ]; then
 fi
 cd "$R/ws/$sub"
 start=$(date +%s)
+# qa-hosted-client.py was deleted before packing (claude-ci-win-src.sh): validation reports it as skipped, not verified.
+export PROJECTAG_QA_UNVERIFIED_SOURCE_PREFIXES="${PROJECTAG_QA_UNVERIFIED_SOURCE_PREFIXES:-backend/scripts/qa-hosted-client.py,backend/scripts/test-projectag-email-setup.py}"
 bash "$R/ws/.claude-ci/cmd.sh" > "$R/results/out.log" 2>&1
 echo $? > "$R/results/rc"
 echo $(( $(date +%s) - start )) > "$R/results/seconds"
