@@ -468,6 +468,15 @@ jobs:
         if: ${{ matrix.leg == 'checks' }}
         run: |
           cargo agx check --id worldforge.tests --id worldforge.no-std --id worldforge.wasm --id worldforge.clippy --id worldforge.json-isolation --id worldforge.fingerprint
+      - name: Live world generation parity, Python against Rust (nightly)
+        # Slow tier: both implementations on three 512-square cases, after the
+        # checks it depends on (tests, json-isolation, fingerprint), about seven
+        # minutes in all, so it runs on the nightly schedule, not every push.
+        # The image's python3 is the oracle; the script refuses an interpreter
+        # whose Unicode tables differ from the ones the Rust port pins.
+        if: ${{ matrix.leg == 'checks' && github.event_name == 'schedule' }}
+        run: |
+          cargo agx check --id worldforge.parity-pipeline
       - name: Vendored block compiler compatibility (compile only)
         if: ${{ matrix.leg == 'checks' }}
         run: |
