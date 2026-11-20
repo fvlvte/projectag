@@ -311,6 +311,8 @@ jobs:
           python3 -W error scripts/test_building_asset_qa.py
           python3 -W error scripts/test_shores_firepit.py
           python3 -W error scripts/test_shores_supplied_animation.py
+          python3 -W error -m unittest scripts.tests.test_build_derived_spider_death
+          python3 -W error scripts/build_derived_spider_death.py --check
           python3 -W error scripts/test_shores_supplied.py
           python3 -B -W error scripts/test_shores_fresh_static.py
           python3 -B -W error scripts/test_shores_fresh_placement.py
