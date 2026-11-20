@@ -166,6 +166,9 @@ jobs:
     runs-on: ${{ startsWith(github.ref_name, 'claude/ci-gpu/') && fromJSON('["self-hosted","Windows","heavy-gpu"]') || 'windows-latest' }}
     # The owner's machine also gates master releases (run-qa-gpu): a lane run may hold it for two hours at most.
     timeout-minutes: ${{ startsWith(github.ref_name, 'claude/ci-gpu/') && 120 || 240 }}
+    # Warnings are errors, as on master (tests/projectag-rust-toolchain.test.mjs checks every Rust-compiling job).
+    env:
+      CARGO_BUILD_WARNINGS: deny
     defaults:
       run:
         shell: bash
