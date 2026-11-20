@@ -550,9 +550,57 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  windows-playtest:
+    name: windows playtest launch
+    needs: plan
+    # Check client.windows-playtest-launch, not a scenario shard: the editor's
+    # Test draft through a real sealed helper on a Windows desktop session.
+    # Its release helper build takes about 25 minutes, so it runs here rather
+    # than on every push. Full sweeps only; a partial run names shards.
+    if: ${{ needs.plan.result == 'success' && needs.plan.outputs.partial == 'false' }}
+    runs-on: windows-latest
+    timeout-minutes: 150
+    env:
+      GITCRYPT_KEY_B64: ${{ secrets.GITCRYPT_KEY_B64 }}
+      WGPU_BACKEND: dx12
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Install git-crypt
+        # Chocolatey no longer carries git-crypt; use the upstream Windows
+        # release binary pinned by digest.
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/bin"
+          curl -fsSL --retry 5 -o "$HOME/bin/git-crypt.exe" https://github.com/AGWA/git-crypt/releases/download/0.7.0/git-crypt-0.7.0-x86_64.exe
+          echo "8c54a3b583cd4fc1483c952480116a9c86f771b02d4403fc6d3627b26cf146e2  $HOME/bin/git-crypt.exe" | sha256sum -c -
+          cygpath -w "$HOME/bin" >> "$GITHUB_PATH"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+      - name: Unlock git-crypt
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${GITCRYPT_KEY_B64}" || { echo "Add repository secret GITCRYPT_KEY_B64"; exit 1; }
+          if ! command -v python3 >/dev/null; then
+            mkdir -p "$HOME/bin"
+            printf '%s\n' '#!/usr/bin/env bash' 'exec python "$@"' > "$HOME/bin/python3"
+            chmod +x "$HOME/bin/python3"
+            echo "$HOME/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/bin:$PATH"
+          fi
+          bash .github/scripts/git-crypt-unlock.sh
+      - name: Test draft through a real sealed helper
+        shell: bash
+        run: python3 scripts/test-windows-playtest-launch.py
+
   report:
     name: report
-    needs: [plan, linux, macos, rtx]
+    needs: [plan, linux, macos, rtx, windows-playtest]
     # always() so a failed shard still reaches the summary. A failed plan
     # (an unknown shard name) must not: every shard would look skipped and
     # a green summary would close the sweep issue.
@@ -580,6 +628,8 @@ jobs:
       - name: Summarize
         env:
           QA_PERIODIC_SHARDS: backend=${{ needs.linux.result }} windows-settings=${{ needs.linux.result }} windows-layouts=${{ needs.linux.result }} combat-ui=${{ needs.linux.result }} hosted-combat=${{ needs.linux.result }} hosted-world=${{ needs.linux.result }} hosted-studio=${{ needs.linux.result }} hosted-content=${{ needs.linux.result }} hosted-shores=${{ needs.linux.result }} scenes-port=${{ needs.linux.result }} scenes-island=${{ needs.linux.result }} editor-journeys=${{ needs.linux.result }} editor-panels=${{ needs.linux.result }} mac=${{ needs.macos.result }} mac-hosted=${{ needs.macos.result }} rtx=${{ needs.rtx.result }}
+          # Checks that run beside the shards; a skipped one did not run.
+          QA_PERIODIC_CHECKS: client.windows-playtest-launch=${{ needs.windows-playtest.result }}
           PARTIAL: ${{ needs.plan.outputs.partial }}
           SELECTED: ${{ needs.plan.outputs.selected }}
         run: |

@@ -7,7 +7,9 @@ REPORTS_DIR holds one directory per shard, each with its qa-report.json. The
 expected shards come from QA_PERIODIC_SHARDS ("id=result id=result", the job
 results of the workflow). A shard whose job was skipped is recorded as not run,
 which is what a shard on the owner's GPU runner does while that runner is off;
-any other shard without a report failed.
+any other shard without a report failed. QA_PERIODIC_CHECKS ("id=result") names
+the checks that run beside the shards, such as client.windows-playtest-launch:
+one that did not succeed is failing under its id, and a skipped one did not run.
 
 Writes SUMMARY_DIR/summary.json, which `cargo agx ci status` reads, and the job
 summary. Exits 1 when a scenario failed or a shard has no report.
@@ -47,7 +49,9 @@ def read_report(path: Path) -> dict | None:
     return report if isinstance(report.get("scenarios"), list) else None
 
 
-def build_summary(reports_dir: Path, results: dict[str, str], run_url: str, sha: str) -> dict:
+def build_summary(
+    reports_dir: Path, results: dict[str, str], run_url: str, sha: str, checks: dict[str, str] | None = None
+) -> dict:
     summary = {
         "schema_version": 1,
         "run_url": run_url,
@@ -56,7 +60,11 @@ def build_summary(reports_dir: Path, results: dict[str, str], run_url: str, sha:
         "missing_shards": [],
         "skipped_shards": [],
         "shards": {},
+        "checks": dict(sorted((checks or {}).items())),
     }
+    for check, result in summary["checks"].items():
+        if result not in ("success", "skipped"):
+            summary["failed"].append(check)
     for shard, result in sorted(results.items()):
         report = read_report(reports_dir / shard / "qa-report.json")
         if report is None:
@@ -107,6 +115,8 @@ def job_summary(summary: dict) -> str:
         lines.append("No report from: " + ", ".join(summary["missing_shards"]) + ".")
     if summary["skipped_shards"]:
         lines.append("Not run, runner off: " + ", ".join(summary["skipped_shards"]) + ".")
+    for check, result in summary["checks"].items():
+        lines.append(f"Check {check}: {'not run' if result == 'skipped' else result}.")
     return "\n".join(lines) + "\n"
 
 
@@ -114,6 +124,7 @@ def issue_text(summary: dict) -> str:
     """Public text: shards, counts and the run. No scenario ids or details."""
     bad = [f"{shard}: {row['failed']} failed" for shard, row in summary["shards"].items() if row["failed"]]
     bad += [f"{shard}: no report" for shard in summary["missing_shards"]]
+    bad += [f"check {check}: {result}" for check, result in summary["checks"].items() if result not in ("success", "skipped")]
     return (
         f"The periodic QA sweep is red on {summary['sha'][:9]}.\n\n"
         + "\n".join(f"- {line}" for line in bad)
@@ -159,7 +170,8 @@ def main() -> int:
     server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     run_url = f"{server}/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
-    summary = build_summary(args.reports, results, run_url, os.environ.get("GITHUB_SHA", ""))
+    checks = shard_results(os.environ.get("QA_PERIODIC_CHECKS", ""))
+    summary = build_summary(args.reports, results, run_url, os.environ.get("GITHUB_SHA", ""), checks)
     args.summary.mkdir(parents=True, exist_ok=True)
     (args.summary / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     text = job_summary(summary)
