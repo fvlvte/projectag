@@ -645,7 +645,9 @@ jobs:
       - name: Unit tests (ray-tracing status under qa-harness, updater launch authorization)
         # The only build that compiles the requested-mode arm of the QA
         # snapshot, and the updater with the test launch-auth trust root.
-        if: ${{ matrix.leg == 'shipped' }}
+        # On the authority leg: on shipped it would reach qa-linux's
+        # 45-minute long pole.
+        if: ${{ matrix.leg == 'authority' }}
         run: >-
           cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml --
           check --id client.lib.qa-harness.raytracing --id updater.launch-auth
