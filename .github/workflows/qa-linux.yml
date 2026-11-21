@@ -673,6 +673,16 @@ jobs:
             --id backend.projectag-service --id backend.projectag-shard \
             --id backend.projectag-service.public-boss-journey --id backend.projectag-service.network-load \
             --id backend.api-gateway
+      - name: Shared-core and service Clippy
+        # Every target, warnings denied: the shared core with authority and
+        # schema, the core again with studio-glb (the two feature sets the
+        # service and the editor ship), the service and the shard.
+        if: ${{ matrix.leg == 'services' }}
+        timeout-minutes: 30
+        run: |
+          cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check \
+            --id core.clippy --id core.studio-glb.clippy \
+            --id backend.projectag-service.clippy --id backend.projectag-shard.clippy
 
   backend:
     # Three parallel legs: the harnesses, the registered database boundaries
