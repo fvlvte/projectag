@@ -105,7 +105,7 @@ jobs:
             libx11-dev libxi-dev libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev \
             libvulkan-dev mesa-vulkan-drivers libvulkan1 xvfb xauth
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: ./.github/actions/rust-toolchain
         with:
           toolchain: "1.99.1"
           # Only the light shard checks the wasm builds.
@@ -175,7 +175,7 @@ jobs:
           filter: tree:0
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: ./.github/actions/rust-toolchain
         with:
           toolchain: "1.99.1"
 
@@ -261,7 +261,7 @@ jobs:
             libx11-dev libxi-dev libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev \
             libvulkan-dev mesa-vulkan-drivers libvulkan1 xvfb xauth
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: ./.github/actions/rust-toolchain
         with:
           toolchain: "1.99.1"
           targets: ${{ matrix.targets }}
@@ -415,7 +415,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git-crypt pkg-config libssl-dev
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: ./.github/actions/rust-toolchain
         with:
           toolchain: "1.99.1"
 

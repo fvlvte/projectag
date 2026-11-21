@@ -1,0 +1,37 @@
+# The one way a checked-out workflow job installs Rust. install.sh installs the
+# pinned toolchain; when an install fails, it removes the partial toolchain and
+# retries, at most three times in all, so leftover component files cannot make
+# every retry fail. dtolnay/rust-toolchain then finds the toolchain present and
+# sets up the job: default toolchain, CARGO_HOME, CARGO_INCREMENTAL and its
+# outputs. `.github/**` is git-crypt-exempt so GitHub can read this file.
+name: rust toolchain
+description: Install the pinned Rust toolchain; a failed install retries from a clean toolchain directory
+inputs:
+  toolchain:
+    description: Exact release; equal to rust-toolchain.toml's channel
+    required: true
+  targets:
+    description: Extra targets, comma-separated
+    required: false
+    default: ""
+  components:
+    description: Extra components, comma-separated
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: rustup toolchain install with clean retries
+      shell: bash
+      env:
+        TOOLCHAIN: ${{ inputs.toolchain }}
+        TARGETS: ${{ inputs.targets }}
+        COMPONENTS: ${{ inputs.components }}
+        # As dtolnay/rust-toolchain sets for its install.
+        RUSTUP_PERMIT_COPY_RENAME: "1"
+      run: bash "$GITHUB_ACTION_PATH/install.sh" "$TOOLCHAIN" "$TARGETS" "$COMPONENTS"
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ inputs.toolchain }}
+        targets: ${{ inputs.targets }}
+        components: ${{ inputs.components }}

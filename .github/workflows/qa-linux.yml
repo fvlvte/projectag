@@ -176,7 +176,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
-      - uses: dtolnay/rust-toolchain@master
+      - uses: ./.github/actions/rust-toolchain
         id: rust
         with:
           toolchain: "1.99.1"
@@ -461,7 +461,7 @@ jobs:
         run: |
           test -n "${GITCRYPT_KEY_B64}" || { echo "Add repository secret GITCRYPT_KEY_B64"; exit 1; }
           bash .github/scripts/git-crypt-unlock.sh
-      - uses: dtolnay/rust-toolchain@master
+      - uses: ./.github/actions/rust-toolchain
         with:
           toolchain: "1.99.1"
           targets: wasm32-unknown-unknown
@@ -722,7 +722,7 @@ jobs:
         run: |
           test -n "${GITCRYPT_KEY_B64}" || { echo "Add repository secret GITCRYPT_KEY_B64"; exit 1; }
           bash .github/scripts/git-crypt-unlock.sh
-      - uses: dtolnay/rust-toolchain@master
+      - uses: ./.github/actions/rust-toolchain
         with:
           toolchain: "1.99.1"
       - uses: Swatinem/rust-cache@v2
@@ -912,7 +912,7 @@ jobs:
         run: |
           test -n "${GITCRYPT_KEY_B64}" || { echo "Add repository secret GITCRYPT_KEY_B64"; exit 1; }
           bash .github/scripts/git-crypt-unlock.sh
-      - uses: dtolnay/rust-toolchain@master
+      - uses: ./.github/actions/rust-toolchain
         with:
           toolchain: "1.99.1"
       - uses: Swatinem/rust-cache@v2
@@ -1123,7 +1123,7 @@ jobs:
           curl -fsSL --retry 5 -o "$HOME/bin/git-crypt.exe" https://github.com/AGWA/git-crypt/releases/download/0.7.0/git-crypt-0.7.0-x86_64.exe
           echo "8c54a3b583cd4fc1483c952480116a9c86f771b02d4403fc6d3627b26cf146e2  $HOME/bin/git-crypt.exe" | sha256sum -c -
           cygpath -w "$HOME/bin" >> "$GITHUB_PATH"
-      - uses: dtolnay/rust-toolchain@master
+      - uses: ./.github/actions/rust-toolchain
         with:
           toolchain: "1.99.1"
       - name: Unlock git-crypt
@@ -1181,7 +1181,7 @@ jobs:
         run: |
           test -n "${GITCRYPT_KEY_B64}" || { echo "Add repository secret GITCRYPT_KEY_B64"; exit 1; }
           bash .github/scripts/git-crypt-unlock.sh
-      - uses: dtolnay/rust-toolchain@master
+      - uses: ./.github/actions/rust-toolchain
         with:
           toolchain: "1.99.1"
       - name: Live splice spacing

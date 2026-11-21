@@ -73,7 +73,7 @@ jobs:
           "$RUNNER_TEMP/zip-crypto/bin/python" scripts/test_standalone_zip_crypto.py
 
       - name: Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: ./.github/actions/rust-toolchain
         with:
           toolchain: "1.99.1"
           targets: x86_64-pc-windows-msvc
