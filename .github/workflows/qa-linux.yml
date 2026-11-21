@@ -652,19 +652,20 @@ jobs:
       - name: Unit tests (editor save readback and stair landings)
         if: ${{ matrix.leg == 'shipped' }}
         run: cargo test -p projectag-client --features engine-test-support,qa-harness,projectag-editor --lib -- --test-threads=1 readback_and_landing
-      - name: Unit tests (editor publication under qa-harness)
+      - name: Unit tests (editor save readback, QA harness and private-room fixture)
+        # Every games::projectag::qa:: test with the editor and local-sim,
+        # not only qa::tests::. A footprint change broke a qa::pursuit test
+        # on master unseen while the narrower literal filter ran here.
         if: ${{ matrix.leg == 'shipped' }}
-        run: |
-          cargo test -p projectag-client --features projectag-editor,local-sim,engine-test-support,qa-harness --lib -- --test-threads=1 games::projectag::qa::tests:: editor_fix_scenarios_read_existing_state_paths
+        run: cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check --id client.lib.qa-harness.editor
       - name: Unit tests (creator body-armor fixture)
         if: ${{ matrix.leg == 'shipped' }}
         run: cargo test -p projectag-client --features local-sim,engine-test-support,qa-harness --lib -- --test-threads=1 creator_body_armor_fixture_requires_the_qa_session_and_release
-      - name: Unit tests (QA window flags)
+      - name: Unit tests (QA harness, window flags and character creator probes)
+        # The same build the two literal filters used, plus every
+        # games::projectag::qa:: test, which no push job ran before.
         if: ${{ matrix.leg == 'checks' }}
-        run: cargo test -p projectag-client --features engine-test-support,qa-harness --lib -- --test-threads=1 app::qa::tests
-      - name: Unit tests (character creator probes)
-        if: ${{ matrix.leg == 'checks' }}
-        run: cargo test -p projectag-client --features engine-test-support,qa-harness --lib -- --test-threads=1 games::projectag::character_creator::probe::tests
+        run: cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check --id client.lib.qa-harness
       - name: Backend product dependency and routing boundaries
         if: ${{ matrix.leg == 'checks' }}
         # The compile check omits the hosted-admission feature: Actions swaps
