@@ -304,6 +304,26 @@ jobs:
           cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa run --driver harness --ready-timeout 240 --require-execution --json \
             "${build_args[@]}" --output "$RUNNER_TEMP/qa-periodic" "${ids[@]}" \
             | tee "$RUNNER_TEMP/qa-periodic-run.json"
+      - name: Periodic-tier checks
+        # Slow checks.toml ids that change rarely and that no push job runs
+        # (docs/development/agx.md#ci-adoption). On the backend shard: it has
+        # the wasm32 target and the Harmony example sources from the step
+        # above, and about 110 minutes left under the shard limit. It runs
+        # even when a scenario failed, and a failing check fails the shard.
+        if: ${{ !cancelled() && matrix.shard == 'backend' }}
+        timeout-minutes: 90
+        run: |
+          (cd tools/wgsl-check && cargo fetch --locked)
+          cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check \
+            --id launcher.tests --id launcher.clippy --id engine.args \
+            --id actors.lib.qa-harness --id tikdong.metrics --id tikdong.metrics-report \
+            --id shaders.wgsl-check \
+            --id examples.harmony-starter.lib --id examples.harmony-starter.bin --id examples.harmony-starter.web \
+            --id examples.harmony-tiled-starter.bin --id examples.harmony-tiled-starter.web \
+            --id examples.harmony-crab-courier.rules --id examples.harmony-crab-courier.bin \
+            --id examples.harmony.clippy --id examples.harmony.clippy-bin --id examples.harmony.clippy-web \
+            --id examples.harmony-crab-courier.clippy-bin --id examples.harmony-tiled-starter.clippy-bin \
+            --id py.build-shores-512 --id py.worldgen --id py.shores-eleven
       - name: Stage report
         if: ${{ always() }}
         run: |

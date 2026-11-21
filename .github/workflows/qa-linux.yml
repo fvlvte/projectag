@@ -348,10 +348,30 @@ jobs:
         run: cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa validate
       - name: Every ready QA scenario has a home
         run: python3 scripts/check-qa-homes.py --report
+      - name: Registered Python and Node unit checks
+        # checks.toml ids no other step runs: Harmony tooling, Shores and
+        # asset producers, hosted QA helpers and two Node bridges. Slower
+        # generator suites run in qa-periodic instead.
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check \
+            --id py.studio-assets-crypt --id static.studio-assets-crypt \
+            --id py.harmony-artifacts --id py.harmony-verify-dispatch --id py.harmony-codex-local \
+            --id py.harmony-codex-executor --id py.harmony-workflow --id py.harmony-linux-workspace \
+            --id py.harmony-gate-docker --id py.harmony-source-policy --id py.harmony-e2e-harness \
+            --id py.harmony-executor-launcher --id py.harmony-preview-storage --id py.harmony-preview-storage-qa \
+            --id py.harmony-app-quality --id py.harmony-app-quality-remote --id py.harmony-local-runner \
+            --id py.coastal-composition --id py.item-models --id py.build-shores-content \
+            --id py.shores-model-outputs --id py.derived-spider --id py.shores-next-static \
+            --id py.qa-hosted-drafts --id py.qa-gate-workflows --id py.harness2 \
+            --id mobile.startup.security --id backend.delivery-counts --id client.studio-model-drop-bridge \
+            --id py.moonlight-web-fetch --id py.asset-tags-migration --id py.qa-hosted-model-import \
+            --id py.qa-pickplace --id py.ground-mix --id py.audio-pipeline --id vendor.bevy-render.browser-gl
       - name: Tool assertion and deployment contracts
         run: >-
           cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml --
-          check --id agx.tests --report "$RUNNER_TEMP/agx-check-static.json"
+          check --id agx.tests --id agx.clippy --report "$RUNNER_TEMP/agx-check-static.json"
       - name: Upload AGX check report
         if: always()
         uses: actions/upload-artifact@v7
@@ -510,9 +530,12 @@ jobs:
       - name: cargo check --features lua --bin tikdong
         if: ${{ matrix.leg == 'checks' }}
         run: cargo check --features lua --bin tikdong
-      - name: Standalone bot keeps the saved broadcast
+      - name: Standalone bot tests and the saved broadcast
+        # Through agx, so a filter that matches no test fails the step. The
+        # literal session_tests:: filter this step used matched none (the
+        # test lives in broadcast_tests) and passed with 0 tests run.
         if: ${{ matrix.leg == 'checks' }}
-        run: cargo test -p tikdong --bin tikdong --features lua -- session_tests::connected_room_uses_the_saved_broadcast --exact
+        run: cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check --id tikdong.tests --id client.test.saved-broadcast
       - name: Independent product clients
         if: ${{ matrix.leg == 'checks' }}
         run: |
@@ -531,6 +554,9 @@ jobs:
           cargo check --target wasm32-unknown-unknown --features game,web-webgl2 --bin engine
           cargo check -p projectag-client --target wasm32-unknown-unknown --features web-webgl2 --bin projectag
           cargo check -p actors-client --target wasm32-unknown-unknown --features web-webgl2 --bin actors
+      - name: Protected browser fetch test compiles for wasm32
+        if: ${{ matrix.leg == 'checks' }}
+        run: cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check --id services.browser-protected-fetch.wasm-check
       - name: Moonlight unit and native socket tests
         if: ${{ matrix.leg == 'checks' }}
         # Twice: the 2D build, then `3d`, the only build that compiles the gfx
@@ -605,6 +631,10 @@ jobs:
           else
             cargo test -p projectag-client --features projectag-editor,local-sim,engine-test-support --lib -- --test-threads=1 "${skips[@]}"
           fi
+      - name: Unit tests (hosted pursuit connection helpers)
+        # On editor-a, the shorter editor half; the shipped leg is fuller.
+        if: ${{ matrix.leg == 'editor-a' }}
+        run: cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check --id client.hosted-pursuit.helpers
       - name: Unit tests (play-test helper grant, cancellation, and install root)
         if: ${{ matrix.leg == 'shipped' }}
         run: |
@@ -612,6 +642,13 @@ jobs:
       - name: Unit tests (helper offline redemption)
         if: ${{ matrix.leg == 'shipped' }}
         run: cargo test -p projectag-client --features gm-playtest-helper,engine-test-support --lib -- --test-threads=1 draft_child_rejects_bad_mode_isolation_and_offline_redemption
+      - name: Unit tests (ray-tracing status under qa-harness, updater launch authorization)
+        # The only build that compiles the requested-mode arm of the QA
+        # snapshot, and the updater with the test launch-auth trust root.
+        if: ${{ matrix.leg == 'shipped' }}
+        run: >-
+          cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml --
+          check --id client.lib.qa-harness.raytracing --id updater.launch-auth
       - name: Unit tests (editor save readback and stair landings)
         if: ${{ matrix.leg == 'shipped' }}
         run: cargo test -p projectag-client --features engine-test-support,qa-harness,projectag-editor --lib -- --test-threads=1 readback_and_landing
@@ -665,6 +702,30 @@ jobs:
       - name: Shared-core client world 7 slot
         if: ${{ matrix.leg == 'authority' }}
         run: cargo test --manifest-path backend/Cargo.toml -p projectag-core --test authored_geometry world7_uses_the_map_spawn_and_legacy_arrival_stays_put -- --exact
+      - name: Shared-core shipped features, Shores examples and layout audits
+        # core.authority never enables studio-glb or content-embedded and does
+        # not run the examples' tests; the audits read the tracked Shores maps.
+        if: ${{ matrix.leg == 'authority' }}
+        run: |
+          cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check \
+            --id core.studio-glb --id core.content-embedded \
+            --id core.example.shores-native-fixture --id core.example.shores-underground-route \
+            --id core.example.shores-boss-owned-probe --id core.example.shores-boss-pursuit-probe \
+            --id core.shores-grow-audit --id core.shores-layout-audit
+      - name: Engine, vendored renderer and asset store unit tests
+        # Moonlight without features and its two examples' tests, the
+        # vendored bevy_pbr and wgpu-hal regressions, and the packed asset
+        # store every engine consumer links. On the authority leg, the
+        # shortest core leg, so qa-linux's longest job is unchanged.
+        if: ${{ matrix.leg == 'authority' }}
+        timeout-minutes: 45
+        run: |
+          cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check \
+            --id moonlight.lib --id moonlight.example.render-probe --id moonlight.example.render-probe.tests \
+            --id moonlight.example.raytracing.tests \
+            --id pbr.shadow-range --id pbr.prepass-depth --id pbr.ray-query-shadows --id vendor.wgpu-hal.gles \
+            --id asset-store.tests --id asset-store.builder --id asset-store.store --id asset-store.wasm \
+            --id asset-store.clippy
       - name: Service and shard fixture suites
         if: ${{ matrix.leg == 'services' }}
         timeout-minutes: 45
@@ -683,6 +744,13 @@ jobs:
           cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check \
             --id core.clippy --id core.studio-glb.clippy \
             --id backend.projectag-service.clippy --id backend.projectag-shard.clippy
+      - name: Service authority and benchmark arithmetic tests
+        # Filters the fixture-suite id does not select.
+        if: ${{ matrix.leg == 'services' }}
+        run: |
+          cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check \
+            --id backend.projectag-service.authority --id backend.projectag-service.sync-bench \
+            --id backend.projectag-service.voice-bench
 
   backend:
     # Three parallel legs: the harnesses, the registered database boundaries
@@ -739,6 +807,13 @@ jobs:
       - name: Harmony product boundary
         if: ${{ matrix.leg == 'harnesses' }}
         run: cargo test --locked --manifest-path backend/Cargo.toml -p harmony -p harmony-web
+      - name: Harmony lint and gateway, and the smaller backend crates
+        if: ${{ matrix.leg == 'harnesses' }}
+        run: |
+          cargo run --quiet --locked --manifest-path tools/agx/Cargo.toml -- check \
+            --id backend.harmony-clippy --id backend.harmony-gateway \
+            --id backend.chess-core --id backend.payments --id backend.proto-events \
+            --id backend.migrator-versions --id backend.live-ingest
       - name: Exchange harness (bank, mail, trade receipts)
         if: ${{ matrix.leg == 'harnesses' }}
         run: cargo run --quiet --manifest-path tools/agx/Cargo.toml -- qa backend exchange --output "$RUNNER_TEMP/qa-backend/exchange"
